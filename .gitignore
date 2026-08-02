@@ -1,0 +1,32 @@
+# Based on the official Go.gitignore template:
+# https://github.com/github/gitignore/blob/main/Go.gitignore
+
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries, built with `go test -c`
+*.test
+
+# Code coverage profiles and other test artifacts
+*.out
+coverage.*
+*.coverprofile
+profile.cov
+
+# Go workspace files
+go.work
+go.work.sum
+
+# Environment variables files
+.env
+
+# macOS system files
+.DS_Store
+
+# Editor/IDE settings
+.idea/
+.vscode/
