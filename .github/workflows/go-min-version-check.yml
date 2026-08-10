@@ -1,0 +1,44 @@
+name: Go min version check
+
+on:
+  schedule:
+    - cron: '0 6 1 * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-min-version:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go (oldstable version)
+        uses: actions/setup-go@v7
+        with:
+          go-version: oldstable
+
+      - name: Compare go.mod minimum version against oldstable
+        env:
+          GOTOOLCHAIN: local
+        run: |
+          OLDSTABLE_MAJOR_MINOR=$(go env GOVERSION | sed 's/^go//' | cut -d. -f1,2)
+          GO_DIRECTIVE=$(go mod edit -json | jq -r .Go)
+          DECLARED_MAJOR_MINOR=$(echo "$GO_DIRECTIVE" | cut -d. -f1,2)
+
+          echo "go.mod minimum: go $GO_DIRECTIVE"
+          echo "current oldstable: $(go env GOVERSION)"
+
+          if [ -z "$OLDSTABLE_MAJOR_MINOR" ] || [ -z "$DECLARED_MAJOR_MINOR" ]; then
+            echo "::error::Could not determine go versions to compare (oldstable='$OLDSTABLE_MAJOR_MINOR', go.mod='$DECLARED_MAJOR_MINOR')."
+            exit 1
+          fi
+
+          SMALLER=$(printf '%s\n%s\n' "$DECLARED_MAJOR_MINOR" "$OLDSTABLE_MAJOR_MINOR" | sort -V | head -1)
+          if [ "$SMALLER" = "$DECLARED_MAJOR_MINOR" ] && [ "$DECLARED_MAJOR_MINOR" != "$OLDSTABLE_MAJOR_MINOR" ]; then
+            echo "::error::go.mod declares go $GO_DIRECTIVE, which is older than the current oldstable ($OLDSTABLE_MAJOR_MINOR). Consider raising the minimum version in go.mod."
+            exit 1
+          fi
