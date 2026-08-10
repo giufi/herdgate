@@ -35,6 +35,7 @@ jobs:
         with:
           category: "/language:go"
           upload: false
+          upload-database: false
           output: sarif-results
 
       - name: Upload SARIF as artifact
