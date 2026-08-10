@@ -14,6 +14,3 @@ linters:
     - misspell
     - unparam
     - gocritic
-
-issues:
-  exclude-use-default: false
