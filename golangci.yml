@@ -10,7 +10,10 @@ linters:
     - ineffassign
     - errcheck
     - goconst
-    - goimports
     - misspell
     - unparam
     - gocritic
+
+formatters:
+  enable:
+    - goimports
