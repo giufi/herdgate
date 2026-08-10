@@ -33,7 +33,7 @@ jobs:
       uses: golangci/golangci-lint-action@v9
       with:
         version: v2.12.2
-        args: --config=golangci.yml --out-format=github-actions
+        args: --config=golangci.yml
 
     - name: Test with race detector
       run: go test -race -v ./...
