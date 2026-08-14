@@ -1,3 +1,4 @@
+// Package inmemorystore provides an in-memory implementation of [herdgate.Store], backed by a map.
 package inmemorystore
 
 // Store is an in-memory implementation of [herdgate.Store], backed by a map.

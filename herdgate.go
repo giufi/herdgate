@@ -1,3 +1,4 @@
+// Package herdgate provides a cache backed by a [Store].
 package herdgate
 
 import "github.com/giu-fi/herdgate/store/inmemorystore"

@@ -52,7 +52,7 @@ func TestDo_FetchError(t *testing.T) {
 	}
 
 	got, err := hg.Do(key, erroringFetch)
-	assert.ErrorIs(t, err, wantErr)
+	require.ErrorIs(t, err, wantErr)
 	assert.Nil(t, got)
 
 	calls := 0

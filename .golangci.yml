@@ -13,6 +13,16 @@ linters:
     - misspell
     - unparam
     - gocritic
+    - errorlint
+    - nolintlint
+    - testifylint
+  settings:
+    gocritic:
+      enabled-checks:
+        - sloppyReassign
+    staticcheck:
+      checks:
+        - all
 
 formatters:
   enable:
