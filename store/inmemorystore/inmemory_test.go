@@ -6,8 +6,9 @@ import (
 	"github.com/stretchr/testify/assert"
 )
 
+const key = "key"
+
 func TestStore_NewIsolated(t *testing.T) {
-	key := "key"
 	want := []byte("foo")
 
 	s1 := New()
@@ -24,7 +25,6 @@ func TestStore_NewIsolated(t *testing.T) {
 }
 
 func TestStore_GetMiss(t *testing.T) {
-	key := "key"
 	otherKey := "otherKey"
 
 	s := New()
@@ -43,13 +43,13 @@ func TestStore_GetHit(t *testing.T) {
 	}
 
 	s := New()
-	for key, value := range testCases {
-		s.Set(key, value)
+	for k, v := range testCases {
+		s.Set(k, v)
 	}
 
-	for key, want := range testCases {
-		t.Run(key, func(t *testing.T) {
-			got, ok := s.Get(key)
+	for k, want := range testCases {
+		t.Run(k, func(t *testing.T) {
+			got, ok := s.Get(k)
 			assert.True(t, ok)
 			assert.Equal(t, want, got)
 		})
@@ -57,7 +57,6 @@ func TestStore_GetHit(t *testing.T) {
 }
 
 func TestStore_SetThenOverwrite(t *testing.T) {
-	key := "key"
 	original := []byte("foo")
 	want := []byte("bar")
 
