@@ -1,26 +1,28 @@
 package herdgate
 
-// A Herdgate is a cache backed by a key-value store.
+import "github.com/giu-fi/herdgate/store/inmemorystore"
+
+// A Herdgate is a cache backed by a [Store].
 type Herdgate struct {
-	store map[string][]byte
+	store Store
 }
 
-// New creates a new Herdgate.
+// New creates a new [Herdgate] backed by an [inmemorystore.Store].
 func New() *Herdgate {
 	return &Herdgate{
-		store: make(map[string][]byte),
+		store: inmemorystore.New(),
 	}
 }
 
 // Do returns the cached value for the key, or calls fetch and caches its result.
 func (hg *Herdgate) Do(key string, fetch func() ([]byte, error)) ([]byte, error) {
-	if cached, ok := hg.store[key]; ok {
+	if cached, ok := hg.store.Get(key); ok {
 		return cached, nil
 	}
 	fresh, err := fetch()
 	if err != nil {
 		return nil, err
 	}
-	hg.store[key] = fresh
+	hg.store.Set(key, fresh)
 	return fresh, nil
 }
