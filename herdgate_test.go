@@ -1,69 +1,76 @@
 package herdgate
 
 import (
-	"fmt"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestDo_CacheMiss(t *testing.T) {
-	hg := New()
-	calls := 0
+const key = "key"
+
+func TestHerdgate_DoCacheMiss(t *testing.T) {
 	want := []byte("foo")
-	fetch := func() ([]byte, error) {
-		calls++
-		return want, nil
+
+	testCases := map[string]time.Duration{
+		"positive TTL": time.Minute,
+		"zero TTL":     0,
+		"negative TTL": -time.Minute,
 	}
 
-	got, err := hg.Do("key", fetch)
+	for name, ttl := range testCases {
+		t.Run(name, func(t *testing.T) {
+			store := &fakeStore{}
+			hg := &Herdgate{store: store}
+
+			calls := 0
+			fetch := func() ([]byte, error) {
+				calls++
+				return want, nil
+			}
+
+			got, err := hg.Do(key, ttl, fetch)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.Equal(t, 1, calls)
+			assert.Equal(t, []string{key}, store.getCalls)
+			assert.Equal(t, []setCall{{key: key, value: want, ttl: ttl}}, store.setCalls)
+		})
+	}
+}
+
+func TestHerdgate_DoCacheHit(t *testing.T) {
+	want := []byte("cached")
+	store := &fakeStore{getValue: want, getFound: true}
+	hg := &Herdgate{store: store}
+
+	calls := 0
+	fetch := func() ([]byte, error) {
+		calls++
+		return []byte("should not be called"), nil
+	}
+
+	got, err := hg.Do(key, time.Minute, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
-	assert.Equal(t, 1, calls)
+	assert.Equal(t, 0, calls)
+	assert.Equal(t, []string{key}, store.getCalls)
+	assert.Empty(t, store.setCalls)
 }
 
-func TestDo_CacheHit(t *testing.T) {
-	hg := New()
-	key := "key"
-	calls := 0
-	fetch := func() ([]byte, error) {
-		calls++
-		return fmt.Appendf(nil, "foo-%d", calls), nil
-	}
+func TestHerdgate_DoFetchError(t *testing.T) {
+	store := &fakeStore{}
+	hg := &Herdgate{store: store}
 
-	first, err := hg.Do(key, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, []byte("foo-1"), first)
-	assert.Equal(t, 1, calls)
-
-	second, err := hg.Do(key, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, first, second)
-	assert.Equal(t, 1, calls)
-}
-
-func TestDo_FetchError(t *testing.T) {
-	hg := New()
-	key := "key"
 	wantErr := assert.AnError
-	erroringFetch := func() ([]byte, error) {
+	fetch := func() ([]byte, error) {
 		return nil, wantErr
 	}
 
-	got, err := hg.Do(key, erroringFetch)
+	got, err := hg.Do(key, time.Minute, fetch)
 	require.ErrorIs(t, err, wantErr)
 	assert.Nil(t, got)
-
-	calls := 0
-	want := []byte("foo")
-	fetch := func() ([]byte, error) {
-		calls++
-		return want, nil
-	}
-
-	got, err = hg.Do(key, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, calls)
+	assert.Equal(t, []string{key}, store.getCalls)
+	assert.Empty(t, store.setCalls)
 }
