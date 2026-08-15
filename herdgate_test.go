@@ -1,6 +1,7 @@
 package herdgate
 
 import (
+	"context"
 	"testing"
 	"time"
 
@@ -25,12 +26,12 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 			hg := &Herdgate{store: store}
 
 			calls := 0
-			fetch := func() ([]byte, error) {
+			fetch := func(ctx context.Context) ([]byte, error) {
 				calls++
 				return want, nil
 			}
 
-			got, err := hg.Do(key, ttl, fetch)
+			got, err := hg.Do(t.Context(), key, ttl, fetch)
 			require.NoError(t, err)
 			assert.Equal(t, want, got)
 			assert.Equal(t, 1, calls)
@@ -46,12 +47,12 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 	hg := &Herdgate{store: store}
 
 	calls := 0
-	fetch := func() ([]byte, error) {
+	fetch := func(ctx context.Context) ([]byte, error) {
 		calls++
 		return []byte("should not be called"), nil
 	}
 
-	got, err := hg.Do(key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), key, time.Minute, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 	assert.Equal(t, 0, calls)
@@ -64,11 +65,11 @@ func TestHerdgate_DoFetchError(t *testing.T) {
 	hg := &Herdgate{store: store}
 
 	wantErr := assert.AnError
-	fetch := func() ([]byte, error) {
+	fetch := func(ctx context.Context) ([]byte, error) {
 		return nil, wantErr
 	}
 
-	got, err := hg.Do(key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), key, time.Minute, fetch)
 	require.ErrorIs(t, err, wantErr)
 	assert.Nil(t, got)
 	assert.Equal(t, []string{key}, store.getCalls)

@@ -2,6 +2,7 @@
 package herdgate
 
 import (
+	"context"
 	"time"
 
 	"github.com/giu-fi/herdgate/store/inmemorystore"
@@ -22,11 +23,11 @@ func New() *Herdgate {
 // Do returns the cached value for the key, or calls fetch and caches its result for TTL.
 //
 // A TTL of 0 or less means the result never expires.
-func (hg *Herdgate) Do(key string, ttl time.Duration, fetch func() ([]byte, error)) ([]byte, error) {
+func (hg *Herdgate) Do(ctx context.Context, key string, ttl time.Duration, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	if cached, ok := hg.store.Get(key); ok {
 		return cached, nil
 	}
-	fresh, err := fetch()
+	fresh, err := fetch(ctx)
 	if err != nil {
 		return nil, err
 	}
