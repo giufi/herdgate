@@ -2,8 +2,6 @@ package herdgate
 
 import "time"
 
-var _ Store = (*fakeStore)(nil)
-
 type setCall struct {
 	key   string
 	value []byte
@@ -17,6 +15,8 @@ type fakeStore struct {
 	getCalls []string
 	setCalls []setCall
 }
+
+var _ Store = (*fakeStore)(nil)
 
 func (f *fakeStore) Get(key string) ([]byte, bool) {
 	f.getCalls = append(f.getCalls, key)

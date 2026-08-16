@@ -7,7 +7,7 @@ import "time"
 //
 // Expiration is lazy: a key is evicted the next time Get is called for it, so a key that expires without being read again stays in memory.
 //
-// [herdgate.Store]: https://pkg.go.dev/github.com/giu-fi/herdgate#Store
+// [herdgate.Store]: https://pkg.go.dev/github.com/giufi/herdgate#Store
 type Store struct {
 	entries map[string]entry
 	now     func() time.Time

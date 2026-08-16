@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
@@ -23,7 +24,8 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 	for name, ttl := range testCases {
 		t.Run(name, func(t *testing.T) {
 			store := &fakeStore{}
-			hg := &Herdgate{store: store}
+			metrics := newMetrics()
+			hg := &Herdgate{store: store, metrics: metrics}
 
 			calls := 0
 			fetch := func(ctx context.Context) ([]byte, error) {
@@ -37,6 +39,9 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 			assert.Equal(t, 1, calls)
 			assert.Equal(t, []string{key}, store.getCalls)
 			assert.Equal(t, []setCall{{key: key, value: want, ttl: ttl}}, store.setCalls)
+			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("miss")), 0)
+			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("hit")), 0)
+			assertHistogramCount(t, metrics.upstreamFetchDuration, "success", 1)
 		})
 	}
 }
@@ -44,7 +49,8 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 func TestHerdgate_DoCacheHit(t *testing.T) {
 	want := []byte("cached")
 	store := &fakeStore{getValue: want, getFound: true}
-	hg := &Herdgate{store: store}
+	metrics := newMetrics()
+	hg := &Herdgate{store: store, metrics: metrics}
 
 	calls := 0
 	fetch := func(ctx context.Context) ([]byte, error) {
@@ -58,11 +64,15 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 	assert.Equal(t, 0, calls)
 	assert.Equal(t, []string{key}, store.getCalls)
 	assert.Empty(t, store.setCalls)
+	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("hit")), 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("miss")), 0)
+	assert.Equal(t, 0, testutil.CollectAndCount(metrics.upstreamFetchDuration))
 }
 
 func TestHerdgate_DoFetchError(t *testing.T) {
 	store := &fakeStore{}
-	hg := &Herdgate{store: store}
+	metrics := newMetrics()
+	hg := &Herdgate{store: store, metrics: metrics}
 
 	wantErr := assert.AnError
 	fetch := func(ctx context.Context) ([]byte, error) {
@@ -74,4 +84,7 @@ func TestHerdgate_DoFetchError(t *testing.T) {
 	assert.Nil(t, got)
 	assert.Equal(t, []string{key}, store.getCalls)
 	assert.Empty(t, store.setCalls)
+	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("hit")), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("miss")), 0)
+	assertHistogramCount(t, metrics.upstreamFetchDuration, "error", 1)
 }

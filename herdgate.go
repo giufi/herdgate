@@ -1,33 +1,45 @@
 // Package herdgate provides a cache backed by a [Store].
+//
+// A TTL controls how long a cached value stays valid before being refetched.
+//
+// Create [Herdgate] instances through a [Provider], which supplies the same metrics to each.
 package herdgate
 
 import (
 	"context"
 	"time"
 
-	"github.com/giu-fi/herdgate/store/inmemorystore"
+	"github.com/giufi/herdgate/store/inmemorystore"
 )
 
 // A Herdgate is a cache backed by a [Store].
 type Herdgate struct {
-	store Store
+	store   Store
+	metrics *metrics
 }
 
-// New creates a new [Herdgate] backed by an [inmemorystore.Store].
-func New() *Herdgate {
+// newWith creates a [Herdgate] backed by a new [inmemorystore.Store] and the
+// given metrics collector.
+func newWith(m *metrics) *Herdgate {
 	return &Herdgate{
-		store: inmemorystore.New(),
+		store:   inmemorystore.New(),
+		metrics: m,
 	}
 }
 
-// Do returns the cached value for the key, or calls fetch and caches its result for TTL.
+// Do returns the cached value for the key, or calls fetch and caches its result for ttl.
 //
-// A TTL of 0 or less means the result never expires.
+// A ttl of 0 or less means the result never expires.
 func (hg *Herdgate) Do(ctx context.Context, key string, ttl time.Duration, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	if cached, ok := hg.store.Get(key); ok {
+		hg.metrics.incrementCacheHit()
 		return cached, nil
 	}
+	hg.metrics.incrementCacheMiss()
+
+	start := time.Now()
 	fresh, err := fetch(ctx)
+	hg.metrics.observeFetch(start, err)
 	if err != nil {
 		return nil, err
 	}
