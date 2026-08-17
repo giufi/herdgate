@@ -4,6 +4,7 @@
 package inmemorystore
 
 import (
+	"bytes"
 	"context"
 	"log/slog"
 	"time"
@@ -49,7 +50,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
 		slog.DebugContext(ctx, "Cache entry expired", _loggerAttr, slog.String("key", key))
 		return nil, false
 	}
-	return entry.value, true
+	return bytes.Clone(entry.value), true
 }
 
 // Set stores the value for the given key, replacing any existing value.
@@ -60,5 +61,5 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 	if ttl > 0 {
 		expiresAt = s.now().Add(ttl)
 	}
-	s.entries[key] = storeEntry{value: value, expiresAt: expiresAt}
+	s.entries[key] = storeEntry{value: bytes.Clone(value), expiresAt: expiresAt}
 }
