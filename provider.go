@@ -32,5 +32,5 @@ func (p *Provider) Metrics() prometheus.Collector {
 
 // New creates a [Herdgate] sharing the provider's metrics.
 func (p *Provider) New() *Herdgate {
-	return newWith(p.metrics)
+	return newHerdgate(p.metrics)
 }

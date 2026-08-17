@@ -10,7 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const key = "key"
+const _key = "key"
 
 func TestHerdgate_DoCacheMiss(t *testing.T) {
 	want := []byte("foo")
@@ -33,12 +33,12 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 				return want, nil
 			}
 
-			got, err := hg.Do(t.Context(), key, ttl, fetch)
+			got, err := hg.Do(t.Context(), _key, ttl, fetch)
 			require.NoError(t, err)
 			assert.Equal(t, want, got)
 			assert.Equal(t, 1, calls)
-			assert.Equal(t, []string{key}, store.getCalls)
-			assert.Equal(t, []setCall{{key: key, value: want, ttl: ttl}}, store.setCalls)
+			assert.Equal(t, []string{_key}, store.getCalls)
+			assert.Equal(t, []setCall{{key: _key, value: want, ttl: ttl}}, store.setCalls)
 			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("miss")), 0)
 			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("hit")), 0)
 			assertHistogramCount(t, metrics.upstreamFetchDuration, "success", 1)
@@ -58,11 +58,11 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 		return []byte("should not be called"), nil
 	}
 
-	got, err := hg.Do(t.Context(), key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), _key, time.Minute, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 	assert.Equal(t, 0, calls)
-	assert.Equal(t, []string{key}, store.getCalls)
+	assert.Equal(t, []string{_key}, store.getCalls)
 	assert.Empty(t, store.setCalls)
 	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("hit")), 0)
 	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("miss")), 0)
@@ -79,10 +79,10 @@ func TestHerdgate_DoFetchError(t *testing.T) {
 		return nil, wantErr
 	}
 
-	got, err := hg.Do(t.Context(), key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), _key, time.Minute, fetch)
 	require.ErrorIs(t, err, wantErr)
 	assert.Nil(t, got)
-	assert.Equal(t, []string{key}, store.getCalls)
+	assert.Equal(t, []string{_key}, store.getCalls)
 	assert.Empty(t, store.setCalls)
 	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("hit")), 0)
 	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("miss")), 0)

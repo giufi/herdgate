@@ -16,6 +16,11 @@ type metrics struct {
 
 var _ prometheus.Collector = (*metrics)(nil)
 
+const (
+	_fetchResultSuccess = "success"
+	_fetchResultError   = "error"
+)
+
 func newMetrics() *metrics {
 	return &metrics{
 		cacheLookups: prometheus.NewCounterVec(prometheus.CounterOpts{
@@ -37,15 +42,10 @@ func (m *metrics) incrementCacheMiss() {
 	m.cacheLookups.WithLabelValues("miss").Inc()
 }
 
-const (
-	fetchResultSuccess = "success"
-	fetchResultError   = "error"
-)
-
 func (m *metrics) observeFetch(start time.Time, err error) {
-	result := fetchResultSuccess
+	result := _fetchResultSuccess
 	if err != nil {
-		result = fetchResultError
+		result = _fetchResultError
 	}
 	m.upstreamFetchDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
 }

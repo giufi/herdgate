@@ -5,21 +5,36 @@ run:
 
 linters:
   enable:
-    - govet
-    - staticcheck
-    - ineffassign
+    - contextcheck
     - errcheck
-    - goconst
-    - misspell
-    - unparam
-    - gocritic
     - errorlint
+    - goconst
+    - gocritic
+    - govet
+    - ineffassign
+    - misspell
     - nolintlint
+    - perfsprint
+    - sloglint
+    - staticcheck
     - testifylint
+    - unparam
+    - unused
   settings:
     gocritic:
-      enabled-checks:
-        - sloppyReassign
+      enabled-tags:
+        - diagnostic
+        - performance
+    sloglint:
+      attr-only: true
+      context: scope
+      forbidden-keys:
+        - time
+        - level
+        - msg
+        - source
+      msg-style: capitalized
+      static-msg: true
     staticcheck:
       checks:
         - all

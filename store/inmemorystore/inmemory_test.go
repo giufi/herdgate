@@ -8,8 +8,8 @@ import (
 )
 
 const (
-	key   = "key"
-	noTTL = 0
+	_key   = "key"
+	_noTTL = 0
 )
 
 func TestStore_NewIsolated(t *testing.T) {
@@ -17,13 +17,13 @@ func TestStore_NewIsolated(t *testing.T) {
 
 	s1 := New()
 	s2 := New()
-	s1.Set(key, want, noTTL)
+	s1.Set(t.Context(), _key, want, _noTTL)
 
-	got, ok := s1.Get(key)
+	got, ok := s1.Get(t.Context(), _key)
 	assert.True(t, ok)
 	assert.Equal(t, want, got)
 
-	got, ok = s2.Get(key)
+	got, ok = s2.Get(t.Context(), _key)
 	assert.False(t, ok)
 	assert.Nil(t, got)
 }
@@ -36,9 +36,9 @@ func TestStore_GetMiss(t *testing.T) {
 	otherKey := "otherKey"
 
 	s := New()
-	s.Set(otherKey, []byte("foo"), noTTL)
+	s.Set(t.Context(), otherKey, []byte("foo"), _noTTL)
 
-	got, ok := s.Get(key)
+	got, ok := s.Get(t.Context(), _key)
 	assert.False(t, ok)
 	assert.Nil(t, got)
 }
@@ -52,12 +52,12 @@ func TestStore_GetHit(t *testing.T) {
 
 	s := New()
 	for k, v := range testCases {
-		s.Set(k, v, noTTL)
+		s.Set(t.Context(), k, v, _noTTL)
 	}
 
 	for k, want := range testCases {
 		t.Run(k, func(t *testing.T) {
-			got, ok := s.Get(k)
+			got, ok := s.Get(t.Context(), k)
 			assert.True(t, ok)
 			assert.Equal(t, want, got)
 		})
@@ -76,7 +76,7 @@ func TestStore_GetTTL(t *testing.T) {
 		"not yet expired": {ttl: time.Minute, delay: 59 * time.Second, wantHit: true},
 		"exactly at ttl":  {ttl: time.Minute, delay: time.Minute, wantHit: true},
 		"expired":         {ttl: time.Minute, delay: time.Minute + time.Second, wantHit: false},
-		"never expires":   {ttl: noTTL, delay: 24 * time.Hour, wantHit: true},
+		"never expires":   {ttl: _noTTL, delay: 24 * time.Hour, wantHit: true},
 	}
 
 	for name, tc := range testCases {
@@ -85,17 +85,17 @@ func TestStore_GetTTL(t *testing.T) {
 			s := New()
 			s.now = func() time.Time { return now }
 
-			s.Set(key, want, tc.ttl)
+			s.Set(t.Context(), _key, want, tc.ttl)
 			now = setAt.Add(tc.delay)
 
-			got, ok := s.Get(key)
+			got, ok := s.Get(t.Context(), _key)
 			assert.Equal(t, tc.wantHit, ok)
 			if tc.wantHit {
 				assert.Equal(t, want, got)
 				return
 			}
 			assert.Nil(t, got)
-			_, exists := s.entries[key]
+			_, exists := s.entries[_key]
 			assert.False(t, exists)
 		})
 	}
@@ -106,15 +106,15 @@ func TestStore_SetValueOverwrite(t *testing.T) {
 	want := []byte("bar")
 
 	s := New()
-	s.Set(key, original, noTTL)
+	s.Set(t.Context(), _key, original, _noTTL)
 
-	got, ok := s.Get(key)
+	got, ok := s.Get(t.Context(), _key)
 	assert.True(t, ok)
 	assert.Equal(t, original, got)
 
-	s.Set(key, want, noTTL)
+	s.Set(t.Context(), _key, want, _noTTL)
 
-	got, ok = s.Get(key)
+	got, ok = s.Get(t.Context(), _key)
 	assert.True(t, ok)
 	assert.Equal(t, want, got)
 }
@@ -128,7 +128,7 @@ func TestStore_SetTTL(t *testing.T) {
 		wantExpiresAt time.Time
 	}{
 		"positive ttl": {ttl: time.Minute, wantExpiresAt: setAt.Add(time.Minute)},
-		"zero ttl":     {ttl: noTTL},
+		"zero ttl":     {ttl: _noTTL},
 		"negative ttl": {ttl: -time.Minute},
 	}
 
@@ -137,8 +137,8 @@ func TestStore_SetTTL(t *testing.T) {
 			s := New()
 			s.now = func() time.Time { return setAt }
 
-			s.Set(key, want, tc.ttl)
-			assert.Equal(t, tc.wantExpiresAt, s.entries[key].expiresAt)
+			s.Set(t.Context(), _key, want, tc.ttl)
+			assert.Equal(t, tc.wantExpiresAt, s.entries[_key].expiresAt)
 		})
 	}
 }
@@ -150,9 +150,9 @@ func TestStore_SetTTLOverwrite(t *testing.T) {
 	s := New()
 	s.now = func() time.Time { return setAt }
 
-	s.Set(key, want, time.Minute)
-	assert.Equal(t, setAt.Add(time.Minute), s.entries[key].expiresAt)
+	s.Set(t.Context(), _key, want, time.Minute)
+	assert.Equal(t, setAt.Add(time.Minute), s.entries[_key].expiresAt)
 
-	s.Set(key, want, noTTL)
-	assert.True(t, s.entries[key].expiresAt.IsZero())
+	s.Set(t.Context(), _key, want, _noTTL)
+	assert.True(t, s.entries[_key].expiresAt.IsZero())
 }
