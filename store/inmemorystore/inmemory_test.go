@@ -1,10 +1,12 @@
 package inmemorystore
 
 import (
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -58,7 +60,7 @@ func TestStore_GetHit(t *testing.T) {
 	for k, want := range testCases {
 		t.Run(k, func(t *testing.T) {
 			got, ok := s.Get(t.Context(), k)
-			assert.True(t, ok)
+			require.True(t, ok)
 			assert.Equal(t, want, got)
 		})
 	}
@@ -95,8 +97,8 @@ func TestStore_GetTTL(t *testing.T) {
 				return
 			}
 			assert.Nil(t, got)
-			_, exists := s.entries[_key]
-			assert.False(t, exists)
+			_, stillStored := s.entries.Load(_key)
+			assert.True(t, stillStored)
 		})
 	}
 }
@@ -138,7 +140,9 @@ func TestStore_SetTTL(t *testing.T) {
 			s.now = func() time.Time { return setAt }
 
 			s.Set(t.Context(), _key, want, tc.ttl)
-			assert.Equal(t, tc.wantExpiresAt, s.entries[_key].expiresAt)
+			entry, ok := s.entries.Load(_key)
+			require.True(t, ok)
+			assert.Equal(t, tc.wantExpiresAt, entry.expiresAt)
 		})
 	}
 }
@@ -151,10 +155,14 @@ func TestStore_SetTTLOverwrite(t *testing.T) {
 	s.now = func() time.Time { return setAt }
 
 	s.Set(t.Context(), _key, want, time.Minute)
-	assert.Equal(t, setAt.Add(time.Minute), s.entries[_key].expiresAt)
+	entry, ok := s.entries.Load(_key)
+	require.True(t, ok)
+	assert.Equal(t, setAt.Add(time.Minute), entry.expiresAt)
 
 	s.Set(t.Context(), _key, want, _noTTL)
-	assert.True(t, s.entries[_key].expiresAt.IsZero())
+	entry, ok = s.entries.Load(_key)
+	require.True(t, ok)
+	assert.True(t, entry.expiresAt.IsZero())
 }
 
 func TestStore_GetIndependentCopy(t *testing.T) {
@@ -162,7 +170,7 @@ func TestStore_GetIndependentCopy(t *testing.T) {
 	s.Set(t.Context(), _key, []byte("foo"), _noTTL)
 
 	got, ok := s.Get(t.Context(), _key)
-	assert.True(t, ok)
+	require.True(t, ok)
 	got[0] = 'X'
 
 	got, ok = s.Get(t.Context(), _key)
@@ -180,4 +188,18 @@ func TestStore_SetIndependentCopy(t *testing.T) {
 	got, ok := s.Get(t.Context(), _key)
 	assert.True(t, ok)
 	assert.Equal(t, []byte("foo"), got)
+}
+
+// This test relies on go test -race to catch data races.
+func TestStore_ConcurrentAccess(t *testing.T) {
+	s := New()
+
+	var wg sync.WaitGroup
+	for range 50 {
+		wg.Go(func() {
+			s.Set(t.Context(), _key, []byte("value"), _noTTL)
+			s.Get(t.Context(), _key)
+		})
+	}
+	wg.Wait()
 }

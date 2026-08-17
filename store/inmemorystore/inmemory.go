@@ -10,13 +10,14 @@ import (
 	"time"
 )
 
-// Store is an in-memory implementation of [herdgate.Store], backed by a map.
+// Store is an in-memory implementation of [herdgate.Store], backed by a [sync.Map].
 //
-// Expiration is lazy: a key is evicted the next time Get is called for it, so a key that expires without being read again stays in memory.
+// Expiration is checked lazily on Get. An expired entry is treated as a miss, but is only removed from the map when a later Set overwrites that key,
+// or never, if the key isn't requested again.
 //
 // [herdgate.Store]: https://pkg.go.dev/github.com/giufi/herdgate#Store
 type Store struct {
-	entries map[string]storeEntry
+	entries syncMap[string, storeEntry]
 	now     func() time.Time
 }
 
@@ -32,8 +33,7 @@ type storeEntry struct {
 // New creates a new [Store].
 func New() *Store {
 	return &Store{
-		entries: make(map[string]storeEntry),
-		now:     func() time.Time { return time.Now().UTC() },
+		now: func() time.Time { return time.Now().UTC() },
 	}
 }
 
@@ -41,12 +41,11 @@ func New() *Store {
 //
 // An elapsed TTL is treated the same as a missing key.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
-	entry, ok := s.entries[key]
+	entry, ok := s.entries.Load(key)
 	if !ok {
 		return nil, false
 	}
 	if !entry.expiresAt.IsZero() && s.now().After(entry.expiresAt) {
-		delete(s.entries, key)
 		slog.DebugContext(ctx, "Cache entry expired", _loggerAttr, slog.String("key", key))
 		return nil, false
 	}
@@ -61,5 +60,5 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 	if ttl > 0 {
 		expiresAt = s.now().Add(ttl)
 	}
-	s.entries[key] = storeEntry{value: bytes.Clone(value), expiresAt: expiresAt}
+	s.entries.Store(key, storeEntry{value: bytes.Clone(value), expiresAt: expiresAt})
 }
