@@ -156,3 +156,28 @@ func TestStore_SetTTLOverwrite(t *testing.T) {
 	s.Set(t.Context(), _key, want, _noTTL)
 	assert.True(t, s.entries[_key].expiresAt.IsZero())
 }
+
+func TestStore_GetIndependentCopy(t *testing.T) {
+	s := New()
+	s.Set(t.Context(), _key, []byte("foo"), _noTTL)
+
+	got, ok := s.Get(t.Context(), _key)
+	assert.True(t, ok)
+	got[0] = 'X'
+
+	got, ok = s.Get(t.Context(), _key)
+	assert.True(t, ok)
+	assert.Equal(t, []byte("foo"), got)
+}
+
+func TestStore_SetIndependentCopy(t *testing.T) {
+	original := []byte("foo")
+
+	s := New()
+	s.Set(t.Context(), _key, original, _noTTL)
+	original[0] = 'X'
+
+	got, ok := s.Get(t.Context(), _key)
+	assert.True(t, ok)
+	assert.Equal(t, []byte("foo"), got)
+}
