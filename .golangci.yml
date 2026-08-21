@@ -28,6 +28,13 @@ linters:
     sloglint:
       attr-only: true
       context: scope
+      custom-funcs:
+        - name: "github.com/giufi/herdgate/internal/logging.Error"
+          msg-pos: 1
+          args-pos: 2
+        - name: "github.com/giufi/herdgate/internal/logging.Debug"
+          msg-pos: 1
+          args-pos: 2
       forbidden-keys:
         - time
         - level
@@ -38,6 +45,12 @@ linters:
     staticcheck:
       checks:
         - all
+  exclusions:
+    rules:
+      - path: 'internal/logging/logger_test\.go'
+        linters:
+          - sloglint
+        source: 'slog\.NewTextHandler\(io\.Discard'
 
 formatters:
   enable:

@@ -8,6 +8,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/giufi/herdgate/internal/logging"
 )
 
 // Store is an in-memory implementation of [herdgate.Store], backed by a [sync.Map].
@@ -21,7 +23,7 @@ type Store struct {
 	now     func() time.Time
 }
 
-var _loggerAttr = slog.String("logger", "herdgate/store/inmemorystore")
+var _logger = logging.New("herdgate/store/inmemorystore")
 
 type storeEntry struct {
 	value []byte
@@ -46,7 +48,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
 		return nil, false
 	}
 	if !entry.expiresAt.IsZero() && s.now().After(entry.expiresAt) {
-		slog.DebugContext(ctx, "Cache entry expired", _loggerAttr, slog.String("key", key))
+		_logger.Debug(ctx, "Cache entry expired", slog.String("key", key))
 		return nil, false
 	}
 	return bytes.Clone(entry.value), true

@@ -11,47 +11,70 @@ import (
 // It implements [prometheus.Collector].
 type metrics struct {
 	cacheLookups          *prometheus.CounterVec
+	cacheWrites           *prometheus.CounterVec
 	upstreamFetchDuration *prometheus.HistogramVec
 }
 
 var _ prometheus.Collector = (*metrics)(nil)
 
 const (
-	_fetchResultSuccess = "success"
-	_fetchResultError   = "error"
+	_labelResult = "result"
+
+	_valueLookupHit   = "hit"
+	_valueLookupMiss  = "miss"
+	_valueLookupError = "error"
+
+	_valueSuccess = "success"
+	_valueError   = "error"
 )
 
 func newMetrics() *metrics {
 	return &metrics{
 		cacheLookups: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "herdgate_cache_lookups_total",
-			Help: "Total cache lookups.",
-		}, []string{"result"}),
+			Help: "Total cache lookup attempts, by result.",
+		}, []string{_labelResult}),
+		cacheWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herdgate_cache_writes_total",
+			Help: "Total cache write attempts, by result.",
+		}, []string{_labelResult}),
 		upstreamFetchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "herdgate_upstream_fetch_duration_seconds",
 			Help: "Duration of upstream fetches, in seconds.",
-		}, []string{"result"}),
+		}, []string{_labelResult}),
 	}
 }
 
 func (m *metrics) incrementCacheHit() {
-	m.cacheLookups.WithLabelValues("hit").Inc()
+	m.cacheLookups.WithLabelValues(_valueLookupHit).Inc()
 }
 
 func (m *metrics) incrementCacheMiss() {
-	m.cacheLookups.WithLabelValues("miss").Inc()
+	m.cacheLookups.WithLabelValues(_valueLookupMiss).Inc()
+}
+
+func (m *metrics) incrementCacheLookupError() {
+	m.cacheLookups.WithLabelValues(_valueLookupError).Inc()
+}
+
+func (m *metrics) recordCacheWrite(err error) {
+	result := _valueSuccess
+	if err != nil {
+		result = _valueError
+	}
+	m.cacheWrites.WithLabelValues(result).Inc()
 }
 
 func (m *metrics) observeFetch(start time.Time, err error) {
-	result := _fetchResultSuccess
+	result := _valueSuccess
 	if err != nil {
-		result = _fetchResultError
+		result = _valueError
 	}
 	m.upstreamFetchDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
 }
 
 func (m *metrics) collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.cacheLookups, m.upstreamFetchDuration}
+	return []prometheus.Collector{m.cacheLookups, m.cacheWrites, m.upstreamFetchDuration}
 }
 
 // Describe implements [prometheus.Collector].

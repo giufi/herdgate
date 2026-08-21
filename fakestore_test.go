@@ -15,17 +15,35 @@ type fakeStore struct {
 	getValue []byte
 	getFound bool
 
+	getPanic any
+	setPanic any
+
 	getCalls []string
 	setCalls []setCall
+
+	setNotify chan setCall // when non-nil, receives every Set call
 }
 
 var _ Store = (*fakeStore)(nil)
 
 func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool) {
+	if f.getPanic != nil {
+		panic(f.getPanic)
+	}
 	f.getCalls = append(f.getCalls, key)
 	return f.getValue, f.getFound
 }
 
 func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
-	f.setCalls = append(f.setCalls, setCall{key: key, value: value, ttl: ttl})
+	if f.setPanic != nil {
+		panic(f.setPanic)
+	}
+	call := setCall{key: key, value: value, ttl: ttl}
+	f.setCalls = append(f.setCalls, call)
+	if f.setNotify != nil {
+		select {
+		case f.setNotify <- call:
+		default:
+		}
+	}
 }

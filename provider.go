@@ -26,11 +26,23 @@ func NewProvider() *Provider {
 // Every [Herdgate] the provider creates shares the returned collector.
 //
 // Register the returned collector with a [prometheus.Registerer].
+//
+// It panics if p was not created with [NewProvider].
 func (p *Provider) Metrics() prometheus.Collector {
+	p.checkMetrics()
 	return p.metrics
 }
 
 // New creates a [Herdgate] sharing the provider's metrics.
+//
+// It panics if p was not created with [NewProvider].
 func (p *Provider) New() *Herdgate {
+	p.checkMetrics()
 	return newHerdgate(p.metrics)
+}
+
+func (p *Provider) checkMetrics() {
+	if p.metrics == nil {
+		panic("herdgate: Provider must be created with NewProvider")
+	}
 }

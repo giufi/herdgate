@@ -9,11 +9,11 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func assertHistogramCount(t *testing.T, h *prometheus.HistogramVec, label string, want int) {
+func assertHistogramObservedOnce(t *testing.T, h *prometheus.HistogramVec, label string) {
 	t.Helper()
 	histogram, ok := h.WithLabelValues(label).(prometheus.Histogram)
 	require.True(t, ok)
 	var sample dto.Metric
 	require.NoError(t, histogram.Write(&sample))
-	assert.EqualValues(t, want, sample.GetHistogram().GetSampleCount())
+	assert.EqualValues(t, 1, sample.GetHistogram().GetSampleCount())
 }

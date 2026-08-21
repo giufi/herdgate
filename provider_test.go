@@ -3,15 +3,32 @@ package herdgate
 import (
 	"testing"
 
+	"github.com/prometheus/client_golang/prometheus"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
-func TestProvider_NewProviderMetricsIsolated(t *testing.T) {
-	provider1 := NewProvider()
-	provider2 := NewProvider()
+func TestProvider_NewProviderMetricsInitialized(t *testing.T) {
+	p := NewProvider()
 
-	assert.NotSame(t, provider1.Metrics(), provider2.Metrics())
+	assert.ElementsMatch(t, describe(newMetrics()), describe(p.metrics))
+}
+
+func TestProvider_NewProviderMetricsIsolated(t *testing.T) {
+	p1 := NewProvider()
+	p2 := NewProvider()
+
+	assert.NotSame(t, p1.Metrics(), p2.Metrics())
+}
+
+func TestProvider_MetricsSameAsInstance(t *testing.T) {
+	p := NewProvider()
+	assert.Same(t, p.metrics, p.Metrics())
+}
+
+func TestProvider_MetricsZeroValuePanic(t *testing.T) {
+	p := &Provider{}
+	assert.PanicsWithValue(t, "herdgate: Provider must be created with NewProvider", func() { p.Metrics() })
 }
 
 func TestProvider_NewMetricsShared(t *testing.T) {
@@ -32,4 +49,21 @@ func TestProvider_NewStoreIsolated(t *testing.T) {
 	hg2 := provider.New()
 
 	assert.NotSame(t, hg1.store, hg2.store)
+}
+
+func TestProvider_NewZeroValuePanic(t *testing.T) {
+	p := &Provider{}
+	assert.PanicsWithValue(t, "herdgate: Provider must be created with NewProvider", func() { p.New() })
+}
+
+func describe(c prometheus.Collector) []string {
+	ch := make(chan *prometheus.Desc, 10)
+	c.Describe(ch)
+	close(ch)
+
+	var descs []string
+	for d := range ch {
+		descs = append(descs, d.String())
+	}
+	return descs
 }
