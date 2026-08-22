@@ -35,25 +35,37 @@ func TestProvider_NewMetricsShared(t *testing.T) {
 	provider := NewProvider()
 	require.NotNil(t, provider.Metrics())
 
-	hg1 := provider.New()
-	hg2 := provider.New()
-
+	hg1 := provider.New(&fakeStore{})
+	hg2 := provider.New(&fakeStore{})
 	assert.Same(t, provider.Metrics(), hg1.metrics)
 	assert.Same(t, provider.Metrics(), hg2.metrics)
 }
 
-func TestProvider_NewStoreIsolated(t *testing.T) {
+func TestProvider_NewStoreSameAsGiven(t *testing.T) {
 	provider := NewProvider()
+	store := &fakeStore{}
 
-	hg1 := provider.New()
-	hg2 := provider.New()
+	hg := provider.New(store)
+	assert.Same(t, store, hg.store)
+}
 
-	assert.NotSame(t, hg1.store, hg2.store)
+func TestProvider_NewNilStorePanic(t *testing.T) {
+	testCases := map[string]Store{
+		"nil":         nil,
+		"nil pointer": (*fakeStore)(nil),
+	}
+
+	for name, store := range testCases {
+		t.Run(name, func(t *testing.T) {
+			p := NewProvider()
+			assert.PanicsWithValue(t, "herdgate: store must not be nil", func() { p.New(store) })
+		})
+	}
 }
 
 func TestProvider_NewZeroValuePanic(t *testing.T) {
 	p := &Provider{}
-	assert.PanicsWithValue(t, "herdgate: Provider must be created with NewProvider", func() { p.New() })
+	assert.PanicsWithValue(t, "herdgate: Provider must be created with NewProvider", func() { p.New(&fakeStore{}) })
 }
 
 func describe(c prometheus.Collector) []string {

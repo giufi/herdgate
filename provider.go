@@ -1,6 +1,10 @@
 package herdgate
 
-import "github.com/prometheus/client_golang/prometheus"
+import (
+	"reflect"
+
+	"github.com/prometheus/client_golang/prometheus"
+)
 
 // A Provider creates new [Herdgate] instances, sharing metrics among them.
 //
@@ -33,16 +37,34 @@ func (p *Provider) Metrics() prometheus.Collector {
 	return p.metrics
 }
 
-// New creates a [Herdgate] sharing the provider's metrics.
+// New creates a [Herdgate] backed by the given [Store] and sharing the
+// provider's metrics.
 //
-// It panics if p was not created with [NewProvider].
-func (p *Provider) New() *Herdgate {
+// It panics if the given store is nil, or if p was not created with
+// [NewProvider].
+func (p *Provider) New(store Store) *Herdgate {
+	if isNilStore(store) {
+		panic("herdgate: store must not be nil")
+	}
 	p.checkMetrics()
-	return newHerdgate(p.metrics)
+	return newHerdgate(store, p.metrics)
 }
 
 func (p *Provider) checkMetrics() {
 	if p.metrics == nil {
 		panic("herdgate: Provider must be created with NewProvider")
+	}
+}
+
+func isNilStore(store Store) bool {
+	if store == nil {
+		return true
+	}
+	v := reflect.ValueOf(store)
+	switch v.Kind() {
+	case reflect.Pointer, reflect.Map:
+		return v.IsNil()
+	default:
+		return false
 	}
 }

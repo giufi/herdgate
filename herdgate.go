@@ -13,7 +13,6 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/giufi/herdgate/store/inmemorystore"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -26,11 +25,10 @@ type Herdgate struct {
 	group   singleflight.Group
 }
 
-// newHerdgate creates a [Herdgate] backed by a new [inmemorystore.Store] and the
-// given metrics collector.
-func newHerdgate(m *metrics) *Herdgate {
+// newHerdgate creates a [Herdgate] backed by the given [Store] and metrics.
+func newHerdgate(store Store, m *metrics) *Herdgate {
 	return &Herdgate{
-		store:   inmemorystore.New(),
+		store:   store,
 		metrics: m,
 	}
 }

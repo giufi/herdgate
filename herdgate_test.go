@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/giufi/herdgate/store/inmemorystore"
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -191,14 +192,16 @@ func TestHerdgate_DoContextCanceled(t *testing.T) {
 }
 
 func TestHerdgate_DoConcurrentCallsCollapsed(t *testing.T) {
-	hg := NewProvider().New()
+	store := inmemorystore.New()
+	hg := NewProvider().New(store)
 	assert.Equal(t, 1, countConcurrentFetches(t, hg, 50))
 }
 
 func TestHerdgate_DoConcurrentCallsAcrossInstancesNotCollapsed(t *testing.T) {
 	provider := NewProvider()
-	instances := []*Herdgate{provider.New(), provider.New()}
-
+	hg1 := provider.New(inmemorystore.New())
+	hg2 := provider.New(inmemorystore.New())
+	instances := []*Herdgate{hg1, hg2}
 	assert.Equal(t, 2, countConcurrentFetchesAcross(t, instances))
 }
 
