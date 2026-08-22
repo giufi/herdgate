@@ -1,14 +1,13 @@
 package herdgate
 
 import (
-	"reflect"
-
 	"github.com/prometheus/client_golang/prometheus"
 )
 
 // A Provider creates new [Herdgate] instances, sharing metrics among them.
 //
-// Register the metrics with a [prometheus.Registerer] via [Provider.Metrics].
+// Register the metrics with a [prometheus.Registerer]. See [NewProvider] and
+// [Provider.Metrics] for further details.
 //
 // Use one Provider per [prometheus.Registerer]. Registering two Providers on
 // the same Registerer fails: their metric names are identical.
@@ -16,20 +15,31 @@ type Provider struct {
 	metrics *metrics
 }
 
-// NewProvider creates a [Provider].
+// NewProvider creates a [Provider], configurable with functional options.
 //
-// Register its metrics with a [prometheus.Registerer] via [Provider.Metrics].
+// Options are applied in order to the new [Provider] before it is returned,
+// and may panic on invalid input.
 //
-// Use one Provider per Registerer: registering two Providers on the same
-// Registerer fails, since their metric names are identical.
-func NewProvider() *Provider {
-	return &Provider{metrics: newMetrics()}
+// Register its metrics with a [prometheus.Registerer]: automatically at
+// construction by passing [WithRegisterer], or manually afterwards via
+// [Provider.Metrics].
+//
+// Use one Provider per [prometheus.Registerer]: registering two Providers on
+// the same Registerer fails, since their metric names are identical.
+func NewProvider(opts ...ProviderOption) *Provider {
+	p := &Provider{metrics: newMetrics()}
+	for _, opt := range opts {
+		opt(p)
+	}
+	return p
 }
 
 // Metrics returns a [prometheus.Collector] holding the provider's metrics.
 // Every [Herdgate] the provider creates shares the returned collector.
 //
-// Register the returned collector with a [prometheus.Registerer].
+// Register the returned collector with a [prometheus.Registerer], unless it
+// was already registered at construction (see [NewProvider]). Registering it
+// again with the same Registerer fails.
 //
 // It panics if p was not created with [NewProvider].
 func (p *Provider) Metrics() prometheus.Collector {
@@ -43,7 +53,7 @@ func (p *Provider) Metrics() prometheus.Collector {
 // It panics if the given store is nil, or if p was not created with
 // [NewProvider].
 func (p *Provider) New(store Store) *Herdgate {
-	if isNilStore(store) {
+	if isNil(store) {
 		panic("herdgate: store must not be nil")
 	}
 	p.checkMetrics()
@@ -53,18 +63,5 @@ func (p *Provider) New(store Store) *Herdgate {
 func (p *Provider) checkMetrics() {
 	if p.metrics == nil {
 		panic("herdgate: Provider must be created with NewProvider")
-	}
-}
-
-func isNilStore(store Store) bool {
-	if store == nil {
-		return true
-	}
-	v := reflect.ValueOf(store)
-	switch v.Kind() {
-	case reflect.Pointer, reflect.Map:
-		return v.IsNil()
-	default:
-		return false
 	}
 }

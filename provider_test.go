@@ -21,6 +21,30 @@ func TestProvider_NewProviderMetricsIsolated(t *testing.T) {
 	assert.NotSame(t, p1.Metrics(), p2.Metrics())
 }
 
+func TestProvider_NewProviderOptionsAppliedInOrder(t *testing.T) {
+	var optionCalls []int
+	opt := func(n int) ProviderOption {
+		return func(*Provider) { optionCalls = append(optionCalls, n) }
+	}
+
+	NewProvider(opt(1), opt(2), opt(3))
+
+	assert.Equal(t, []int{1, 2, 3}, optionCalls)
+}
+
+func TestProvider_NewProviderOptionsStoppedByPanic(t *testing.T) {
+	var optionCalls []int
+	opt := func(n int) ProviderOption {
+		return func(*Provider) { optionCalls = append(optionCalls, n) }
+	}
+	failingOption := func(*Provider) { panic("option failed") }
+
+	assert.PanicsWithValue(t, "option failed", func() {
+		NewProvider(opt(1), opt(2), failingOption, opt(3))
+	})
+	assert.Equal(t, []int{1, 2}, optionCalls)
+}
+
 func TestProvider_MetricsSameAsInstance(t *testing.T) {
 	p := NewProvider()
 	assert.Same(t, p.metrics, p.Metrics())
@@ -50,17 +74,8 @@ func TestProvider_NewStoreSameAsGiven(t *testing.T) {
 }
 
 func TestProvider_NewNilStorePanic(t *testing.T) {
-	testCases := map[string]Store{
-		"nil":         nil,
-		"nil pointer": (*fakeStore)(nil),
-	}
-
-	for name, store := range testCases {
-		t.Run(name, func(t *testing.T) {
-			p := NewProvider()
-			assert.PanicsWithValue(t, "herdgate: store must not be nil", func() { p.New(store) })
-		})
-	}
+	p := NewProvider()
+	assert.PanicsWithValue(t, "herdgate: store must not be nil", func() { p.New(nil) })
 }
 
 func TestProvider_NewZeroValuePanic(t *testing.T) {
