@@ -191,6 +191,64 @@ func TestHerdgate_DoContextCanceled(t *testing.T) {
 	}
 }
 
+func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
+	store := inmemorystore.New()
+	hg := NewProvider().New(store)
+
+	want := []byte("foo")
+	calls := 0
+	fetch := func(context.Context) ([]byte, error) {
+		calls++
+		return want, nil
+	}
+
+	got1, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	require.NoError(t, err)
+	assert.Equal(t, want, got1)
+
+	got2, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	require.NoError(t, err)
+	assert.Equal(t, want, got2)
+
+	assert.Equal(t, 1, calls)
+	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues("miss")), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues("hit")), 0)
+	assertHistogramObservedOnce(t, hg.metrics.upstreamFetchDuration, "success")
+}
+
+func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
+	store := inmemorystore.New()
+	hg := NewProvider().New(store)
+
+	fetchErr := func(context.Context) ([]byte, error) {
+		return nil, assert.AnError
+	}
+
+	_, err := hg.Do(t.Context(), _key, time.Minute, fetchErr)
+	require.ErrorIs(t, err, assert.AnError)
+
+	want := []byte("foo")
+	calls := 0
+	fetchSuccess := func(context.Context) ([]byte, error) {
+		calls++
+		return want, nil
+	}
+
+	got, err := hg.Do(t.Context(), _key, time.Minute, fetchSuccess)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+
+	got, err = hg.Do(t.Context(), _key, time.Minute, fetchSuccess)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+
+	assert.Equal(t, 1, calls)
+	assert.InDelta(t, 2, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues("miss")), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues("hit")), 0)
+	assertHistogramObservedOnce(t, hg.metrics.upstreamFetchDuration, "error")
+	assertHistogramObservedOnce(t, hg.metrics.upstreamFetchDuration, "success")
+}
+
 func TestHerdgate_DoConcurrentCallsCollapsed(t *testing.T) {
 	store := inmemorystore.New()
 	hg := NewProvider().New(store)
