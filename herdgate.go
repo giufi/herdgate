@@ -25,6 +25,14 @@ type Herdgate struct {
 	group   singleflight.Group
 }
 
+// DoOptions holds the options for [Herdgate.Do].
+type DoOptions struct {
+	// TTL is how long a fetched value stays cached.
+	//
+	// If TTL is zero or negative, the value never expires.
+	TTL time.Duration
+}
+
 // newHerdgate creates a [Herdgate] backed by the given [Store] and metrics.
 func newHerdgate(store Store, m *metrics) *Herdgate {
 	return &Herdgate{
@@ -34,9 +42,7 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 }
 
 // Do returns the cached value for the key. On a miss the value comes from
-// fetch and is cached for ttl.
-//
-// A ttl of 0 or less means the result never expires.
+// fetch and is cached according to opts.
 //
 // Caching is best-effort: a failed read is treated as a miss, and a
 // value that was fetched successfully is still returned even if it could
@@ -48,14 +54,14 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 // to completion and caches its result.
 //
 // A panic from fetch is recovered and returned as an error.
-func (hg *Herdgate) Do(ctx context.Context, key string, ttl time.Duration, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
+func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	if cached, ok := hg.callStoreGet(ctx, key); ok {
 		return cached, nil
 	}
 
 	sharedCtx := context.WithoutCancel(ctx)
 	ch := hg.group.DoChan(key, func() (any, error) {
-		return hg.fetchAndStore(sharedCtx, key, ttl, fetch)
+		return hg.fetchAndStore(sharedCtx, key, opts.TTL, fetch)
 	})
 
 	select {

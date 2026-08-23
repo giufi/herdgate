@@ -37,7 +37,7 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 				return want, nil
 			}
 
-			got, err := hg.Do(t.Context(), _key, ttl, fetch)
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: ttl}, fetch)
 			require.NoError(t, err)
 			assert.Equal(t, want, got)
 			assert.Equal(t, 1, calls)
@@ -62,7 +62,7 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 		return []byte("should not be called"), nil
 	}
 
-	got, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 	assert.Equal(t, 0, calls)
@@ -83,7 +83,7 @@ func TestHerdgate_DoStoreGetPanic(t *testing.T) {
 		return want, nil
 	}
 
-	got, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues("error")), 0)
@@ -101,7 +101,7 @@ func TestHerdgate_DoFetchError(t *testing.T) {
 		return nil, wantErr
 	}
 
-	got, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 	require.ErrorIs(t, err, wantErr)
 	assert.Nil(t, got)
 	assert.Equal(t, []string{_key}, store.getCalls)
@@ -131,7 +131,7 @@ func TestHerdgate_DoFetchPanic(t *testing.T) {
 				panic(tc.panicVal)
 			}
 
-			got, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 			if tc.wantErrIs != nil {
 				require.ErrorIs(t, err, tc.wantErrIs)
 			} else {
@@ -154,7 +154,7 @@ func TestHerdgate_DoStoreSetPanic(t *testing.T) {
 		return want, nil
 	}
 
-	got, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues("error")), 0)
@@ -177,7 +177,7 @@ func TestHerdgate_DoContextCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel() // canceled before Do runs, so Do returns immediately without waiting for fetch
 
-	got, err := hg.Do(ctx, _key, ttl, fetch)
+	got, err := hg.Do(ctx, _key, DoOptions{TTL: ttl}, fetch)
 	require.ErrorIs(t, err, context.Canceled)
 	assert.Nil(t, got)
 
@@ -202,11 +202,11 @@ func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
 		return want, nil
 	}
 
-	got1, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	got1, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got1)
 
-	got2, err := hg.Do(t.Context(), _key, time.Minute, fetch)
+	got2, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got2)
 
@@ -224,7 +224,7 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 		return nil, assert.AnError
 	}
 
-	_, err := hg.Do(t.Context(), _key, time.Minute, fetchErr)
+	_, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetchErr)
 	require.ErrorIs(t, err, assert.AnError)
 
 	want := []byte("foo")
@@ -234,11 +234,11 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 		return want, nil
 	}
 
-	got, err := hg.Do(t.Context(), _key, time.Minute, fetchSuccess)
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetchSuccess)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 
-	got, err = hg.Do(t.Context(), _key, time.Minute, fetchSuccess)
+	got, err = hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetchSuccess)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 
@@ -283,7 +283,7 @@ func countConcurrentFetchesAcross(t *testing.T, instances []*Herdgate) int {
 		go func() {
 			defer done.Done()
 			ready.Done()
-			got, err := hg.Do(t.Context(), _key, time.Minute, func(context.Context) ([]byte, error) {
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
 				calls.Add(1)
 				<-unblockFetch // held open until every caller is about to call Do
 				return want, nil
