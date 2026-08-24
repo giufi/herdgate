@@ -76,7 +76,7 @@ func TestMetrics_ObserveFetch(t *testing.T) {
 			m := newMetrics()
 
 			m.observeFetch(time.Now(), tc.err)
-			assertHistogramObservedOnce(t, m.upstreamFetchDuration, tc.label)
+			assertHistogramObservedOnce(t, m.fetchDuration, tc.label)
 		})
 	}
 }

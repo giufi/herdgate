@@ -1,14 +1,8 @@
-// Package herdgate provides a cache backed by a [Store].
-//
-// A TTL controls how long a cached value stays valid before being refetched.
-//
-// Concurrent fetches for the same key are collapsed.
-//
-// Create [Herdgate] instances through a [Provider], which supplies the same metrics to each.
 package herdgate
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"time"
@@ -18,19 +12,28 @@ import (
 
 const defaultFetchTimeout = 30 * time.Second
 
-// A Herdgate is a cache backed by a [Store].
+// A Herdgate is a read-through cache backed by a [Store].
 type Herdgate struct {
 	store   Store
 	metrics *metrics
 	group   singleflight.Group
 }
 
-// DoOptions holds the options for [Herdgate.Do].
+// DoOptions holds the options for [Herdgate.Do] and [DoDecode].
 type DoOptions struct {
 	// TTL is how long a fetched value stays cached.
 	//
 	// If TTL is zero or negative, the value never expires.
 	TTL time.Duration
+
+	// Codec is used by [DoDecode] to convert the T value to and from bytes,
+	// which are expected by the wrapped [Herdgate.Do].
+	//
+	// Required when calling [DoDecode]: a nil Codec makes it return an
+	// error.
+	//
+	// [Herdgate.Do] ignores this field.
+	Codec Codec
 }
 
 // newHerdgate creates a [Herdgate] backed by the given [Store] and metrics.
@@ -41,8 +44,8 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 	}
 }
 
-// Do returns the cached value for the key. On a miss the value comes from
-// fetch and is cached according to opts.
+// Do returns the cached value for the key, if present. On a cache miss,
+// the value comes from fetch and is cached according to opts.
 //
 // Caching is best-effort: a failed read is treated as a miss, and a
 // value that was fetched successfully is still returned even if it could
@@ -55,7 +58,7 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 //
 // A panic from fetch is recovered and returned as an error.
 func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
-	if cached, ok := hg.callStoreGet(ctx, key); ok {
+	if cached, ok := hg.guardedStoreGet(ctx, key); ok {
 		return cached, nil
 	}
 
@@ -79,12 +82,45 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 	}
 }
 
-// callStoreGet attempts to read the stored value for the key, turning a
+// DoDecode wraps [Herdgate.Do]: on a cache hit the cached bytes are
+// decoded into T with opts.Codec, whereas on a cache miss fetch's result
+// is encoded with it, cached, and returned as T.
+//
+// Even on a miss, the returned T is a copy decoded from the bytes
+// [Herdgate.Do] returns, not fetch's original return value.
+//
+// See [Herdgate.Do] for more details, such as caching, collapsing, and
+// panic recovery.
+func DoDecode[T any](ctx context.Context, hg *Herdgate, key string, opts DoOptions, fetch func(ctx context.Context) (T, error)) (T, error) {
+	var zero T
+	if isNil(opts.Codec) {
+		return zero, errors.New("herdgate: DoOptions.Codec must not be nil")
+	}
+	raw, err := hg.Do(ctx, key, opts, func(ctx context.Context) ([]byte, error) {
+		fetched, err := fetch(ctx)
+		if err != nil {
+			return nil, err
+		}
+		return guardedMarshal(ctx, opts.Codec, fetched)
+	})
+	if err != nil {
+		return zero, err
+	}
+
+	var decoded T
+	if err := guardedUnmarshal(ctx, opts.Codec, raw, &decoded); err != nil {
+		_logger.Error(ctx, "Unmarshal failed", slog.String("key", key), slog.Any("error", err))
+		return zero, err
+	}
+	return decoded, nil
+}
+
+// guardedStoreGet attempts to read the stored value for the key, turning a
 // panic into a miss.
 //
 // Caching is best-effort on lookups: a Store that panics degrades Do to
 // an uncached fetch instead of failing it.
-func (hg *Herdgate) callStoreGet(ctx context.Context, key string) (value []byte, found bool) {
+func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []byte, found bool) {
 	defer func() {
 		if r := recover(); r != nil {
 			value, found = nil, false
@@ -121,13 +157,13 @@ func (hg *Herdgate) fetchAndStore(ctx context.Context, key string, ttl time.Dura
 		}
 	}()
 
-	value, err := hg.callFetch(ctx, fetch)
+	value, err := hg.guardedFetch(ctx, fetch)
 	if err != nil {
 		_logger.Error(ctx, "Fetch failed", slog.String("key", key), slog.Any("error", err))
 		return nil, err
 	}
 
-	if err := hg.callStoreSet(ctx, key, value, ttl); err != nil {
+	if err := hg.guardedStoreSet(ctx, key, value, ttl); err != nil {
 		_logger.Error(ctx, "Cache write failed, returning fetched value", slog.String("key", key), slog.Any("error", err))
 		return value, nil
 	}
@@ -135,11 +171,11 @@ func (hg *Herdgate) fetchAndStore(ctx context.Context, key string, ttl time.Dura
 	return value, nil
 }
 
-// callFetch runs fetch under a timeout, turning a panic into an error.
+// guardedFetch runs fetch under a timeout, turning a panic into an error.
 //
 // Recovery happens here, not in fetchAndStore, so observeFetch labels
 // the fetch as an error.
-func (hg *Herdgate) callFetch(ctx context.Context, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
+func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
@@ -153,12 +189,12 @@ func (hg *Herdgate) callFetch(ctx context.Context, fetch func(ctx context.Contex
 	return fetch(fetchCtx)
 }
 
-// callStoreSet caches the fetched value for the key, turning a panic
+// guardedStoreSet caches the fetched value for the key, turning a panic
 // into an error.
 //
 // Recovery happens here, not in fetchAndStore, so recordCacheWrite labels
 // the write as an error.
-func (hg *Herdgate) callStoreSet(ctx context.Context, key string, value []byte, ttl time.Duration) (err error) {
+func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byte, ttl time.Duration) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("store.Set panicked: %w", errFromPanic(ctx, r))

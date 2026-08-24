@@ -10,9 +10,9 @@ import (
 //
 // It implements [prometheus.Collector].
 type metrics struct {
-	cacheLookups          *prometheus.CounterVec
-	cacheWrites           *prometheus.CounterVec
-	upstreamFetchDuration *prometheus.HistogramVec
+	cacheLookups  *prometheus.CounterVec
+	cacheWrites   *prometheus.CounterVec
+	fetchDuration *prometheus.HistogramVec
 }
 
 var _ prometheus.Collector = (*metrics)(nil)
@@ -38,9 +38,9 @@ func newMetrics() *metrics {
 			Name: "herdgate_cache_writes_total",
 			Help: "Total cache write attempts, by result.",
 		}, []string{_labelResult}),
-		upstreamFetchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name: "herdgate_upstream_fetch_duration_seconds",
-			Help: "Duration of upstream fetches, in seconds.",
+		fetchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "herdgate_fetch_duration_seconds",
+			Help: "Duration of fetch calls, in seconds. With DoDecode, each duration also includes marshaling the fetched value.",
 		}, []string{_labelResult}),
 	}
 }
@@ -70,11 +70,11 @@ func (m *metrics) observeFetch(start time.Time, err error) {
 	if err != nil {
 		result = _valueError
 	}
-	m.upstreamFetchDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
+	m.fetchDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
 }
 
 func (m *metrics) collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.cacheLookups, m.cacheWrites, m.upstreamFetchDuration}
+	return []prometheus.Collector{m.cacheLookups, m.cacheWrites, m.fetchDuration}
 }
 
 // Describe implements [prometheus.Collector].

@@ -5,7 +5,7 @@ import (
 	"time"
 )
 
-// Store is a key-value store with optional per-key TTL expiry.
+// Store is the interface for storing and retrieving key-value pairs with optional per-key TTL expiry.
 type Store interface {
 	// Get returns the value stored for the given key, and reports whether it was found.
 	//
