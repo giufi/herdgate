@@ -393,28 +393,37 @@ func countConcurrentFetchesAcross(t *testing.T, instances []*Herdgate) int {
 
 	want := []byte(_wantValue)
 	var calls atomic.Int64
-	unblockFetch := make(chan struct{})
+	leaderStarted := make(chan struct{})
+	var closeOnce sync.Once
 
-	var ready, done sync.WaitGroup
-	ready.Add(len(instances))
+	var done sync.WaitGroup
 	done.Add(len(instances))
-	for _, hg := range instances {
-		go func() {
-			defer done.Done()
-			ready.Done()
-			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-				calls.Add(1)
-				<-unblockFetch // held open until every caller is about to call Do
-				return want, nil
-			})
-			assert.NoError(t, err)
-			assert.Equal(t, want, got)
-		}()
+	errs := make(chan error, len(instances))
+	callDo := func(hg *Herdgate) {
+		defer done.Done()
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+			calls.Add(1)
+			closeOnce.Do(func() { close(leaderStarted) })
+			time.Sleep(50 * time.Millisecond) // margin for all the Do calls to happen
+			return want, nil
+		})
+		errs <- err
+		assert.Equal(t, want, got)
 	}
 
-	ready.Wait()
-	close(unblockFetch)
+	go callDo(instances[0])
+	<-leaderStarted
+
+	for _, hg := range instances[1:] {
+		go callDo(hg)
+	}
+
 	done.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
 
 	return int(calls.Load())
 }
