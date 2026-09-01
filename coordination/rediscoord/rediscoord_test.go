@@ -32,7 +32,7 @@ func TestCoordination_AcquireInvalidTTL(t *testing.T) {
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			_, acquired, err := coord.Acquire(t.Context(), _key, tc.ttl)
-			assert.EqualError(t, err, tc.wantErr)
+			require.EqualError(t, err, tc.wantErr)
 			assert.False(t, acquired)
 		})
 	}
@@ -44,7 +44,7 @@ func TestCoordination_AcquireTokenGenerationError(t *testing.T) {
 	coord.rand = iotest.ErrReader(errors.New("read failed"))
 
 	_, acquired, err := coord.Acquire(t.Context(), _key, time.Minute)
-	assert.EqualError(t, err, "rediscoord: token generation: read failed")
+	require.EqualError(t, err, "rediscoord: token generation: read failed")
 	assert.False(t, acquired)
 }
 
@@ -54,7 +54,7 @@ func TestCoordination_AcquireConnectionError(t *testing.T) {
 	server.Close()
 
 	_, acquired, err := coord.Acquire(t.Context(), _key, time.Minute)
-	assert.Error(t, err)
+	require.Error(t, err)
 	assert.False(t, acquired)
 }
 
@@ -124,7 +124,7 @@ func TestCoordination_ReleaseMismatchedToken(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, acquired)
 
-	assert.NoError(t, coord.Release(t.Context(), _key, "wrong-token"))
+	require.NoError(t, coord.Release(t.Context(), _key, "wrong-token"))
 
 	// Still held: a second acquire must not succeed.
 	_, acquired, err = coord.Acquire(t.Context(), _key, time.Minute)

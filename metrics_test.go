@@ -54,8 +54,8 @@ func TestMetrics_RecordCacheWrite(t *testing.T) {
 		err        error
 		wantResult string
 	}{
-		"success": {err: nil, wantResult: _testResultSuccess},
-		"error":   {err: assert.AnError, wantResult: _testResultError},
+		_testResultSuccess: {err: nil, wantResult: _testResultSuccess},
+		_testResultError:   {err: assert.AnError, wantResult: _testResultError},
 	}
 
 	for name, tc := range testCases {
@@ -74,9 +74,9 @@ func TestMetrics_RecordAcquire(t *testing.T) {
 		err        error
 		wantResult string
 	}{
-		"acquired":  {acquired: true, err: nil, wantResult: _testResultAcquired},
-		"contended": {acquired: false, err: nil, wantResult: _testResultContended},
-		"error":     {acquired: false, err: assert.AnError, wantResult: _testResultError},
+		_testResultAcquired:  {acquired: true, err: nil, wantResult: _testResultAcquired},
+		_testResultContended: {acquired: false, err: nil, wantResult: _testResultContended},
+		_testResultError:     {acquired: false, err: assert.AnError, wantResult: _testResultError},
 	}
 
 	for name, tc := range testCases {
@@ -95,8 +95,8 @@ func TestMetrics_RecordRelease(t *testing.T) {
 		err        error
 		wantResult string
 	}{
-		"success": {err: nil, wantResult: _testResultSuccess},
-		"error":   {err: assert.AnError, wantResult: _testResultError},
+		_testResultSuccess: {err: nil, wantResult: _testResultSuccess},
+		_testResultError:   {err: assert.AnError, wantResult: _testResultError},
 	}
 
 	for name, tc := range testCases {
@@ -115,8 +115,8 @@ func TestMetrics_ObserveFetch(t *testing.T) {
 		err        error
 		wantResult string
 	}{
-		"success": {err: nil, wantResult: _testResultSuccess},
-		"error":   {err: assert.AnError, wantResult: _testResultError},
+		_testResultSuccess: {err: nil, wantResult: _testResultSuccess},
+		_testResultError:   {err: assert.AnError, wantResult: _testResultError},
 	}
 
 	for name, tc := range testCases {
