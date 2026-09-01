@@ -1,9 +1,10 @@
-package herdgate
+// Package validation provides validation helpers.
+package validation
 
 import "reflect"
 
-// isNil reports whether v is nil, including typed nils.
-func isNil(v any) bool {
+// IsNil reports whether v is nil, including typed nils.
+func IsNil(v any) bool {
 	if v == nil {
 		return true
 	}

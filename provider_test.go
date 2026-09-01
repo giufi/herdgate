@@ -83,6 +83,31 @@ func TestProvider_NewZeroValuePanic(t *testing.T) {
 	assert.PanicsWithValue(t, "herdgate: Provider must be created with NewProvider", func() { p.New(&fakeStore{}) })
 }
 
+func TestProvider_NewOptionsAppliedInOrder(t *testing.T) {
+	var optionCalls []int
+	opt := func(n int) HerdgateOption {
+		return func(*Herdgate) { optionCalls = append(optionCalls, n) }
+	}
+
+	NewProvider().New(&fakeStore{}, opt(1), opt(2), opt(3))
+
+	assert.Equal(t, []int{1, 2, 3}, optionCalls)
+}
+
+func TestProvider_NewOptionsStoppedByPanic(t *testing.T) {
+	var optionCalls []int
+	opt := func(n int) HerdgateOption {
+		return func(*Herdgate) { optionCalls = append(optionCalls, n) }
+	}
+	failingOption := func(*Herdgate) { panic("option failed") }
+	p := NewProvider()
+
+	assert.PanicsWithValue(t, "option failed", func() {
+		p.New(&fakeStore{}, opt(1), opt(2), failingOption, opt(3))
+	})
+	assert.Equal(t, []int{1, 2}, optionCalls)
+}
+
 func describe(c prometheus.Collector) []string {
 	ch := make(chan *prometheus.Desc, 10)
 	c.Describe(ch)

@@ -41,12 +41,12 @@ func TestGuardedMarshal_Panic(t *testing.T) {
 		wantErrIs  error
 		wantErrMsg string
 	}{
-		_errValueCase: {
+		_errValueTestCase: {
 			panicVal:   assert.AnError,
 			wantErrIs:  assert.AnError,
 			wantErrMsg: "marshal herdgate.jsonPayload panicked: assert.AnError general error for testing",
 		},
-		_nonErrValueCase: {
+		_nonErrValueTestCase: {
 			panicVal:   _panicValue,
 			wantErrMsg: "marshal herdgate.jsonPayload panicked: generic panic value",
 		},
@@ -83,12 +83,12 @@ func TestGuardedUnmarshal_Panic(t *testing.T) {
 		wantErrIs  error
 		wantErrMsg string
 	}{
-		_errValueCase: {
+		_errValueTestCase: {
 			panicVal:   assert.AnError,
 			wantErrIs:  assert.AnError,
 			wantErrMsg: "unmarshal *herdgate.jsonPayload panicked: assert.AnError general error for testing",
 		},
-		_nonErrValueCase: {
+		_nonErrValueTestCase: {
 			panicVal:   _panicValue,
 			wantErrMsg: "unmarshal *herdgate.jsonPayload panicked: generic panic value",
 		},

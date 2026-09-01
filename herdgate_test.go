@@ -15,15 +15,21 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-const _key = "key"
-
 const (
+	_key             = "key"
+	_token           = "token"
 	_wantValue       = "foo"
 	_jsonPayloadName = "foo"
-	_errValueCase    = "error value"
-	_nonErrValueCase = "non-error value"
-	_errorMsg        = "generic error"
-	_panicValue      = "generic panic value"
+
+	_errorMsg   = "generic error"
+	_panicValue = "generic panic value"
+
+	_errValueTestCase    = "error value"
+	_nonErrValueTestCase = "non-error value"
+
+	_successTestCase = "success"
+	_errorTestCase   = "error"
+	_panicTestCase   = "panic"
 )
 
 func TestHerdgate_DoCacheMiss(t *testing.T) {
@@ -127,12 +133,12 @@ func TestHerdgate_DoFetchPanic(t *testing.T) {
 		wantErrIs   error
 		wantErrText string
 	}{
-		_errValueCase: {
+		_errValueTestCase: {
 			panicVal:    assert.AnError,
 			wantErrIs:   assert.AnError,
 			wantErrText: "fetch panicked: assert.AnError general error for testing",
 		},
-		_nonErrValueCase: {panicVal: _panicValue, wantErrText: "fetch panicked: generic panic value"},
+		_nonErrValueTestCase: {panicVal: _panicValue, wantErrText: "fetch panicked: generic panic value"},
 	}
 
 	for name, tc := range testCases {
@@ -262,18 +268,137 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 	assertHistogramObservedOnce(t, hg.metrics.fetchDuration, "success")
 }
 
-func TestHerdgate_DoConcurrentCallsCollapsed(t *testing.T) {
+func TestHerdgate_DoConcurrentCallsCoalesced(t *testing.T) {
 	store := inmemorystore.New()
 	hg := NewProvider().New(store)
-	assert.Equal(t, 1, countConcurrentFetches(t, hg, 50))
+
+	const callers = 50
+	fetchCalls := countConcurrentFetches(t, hg, callers)
+	require.Equal(t, 1, fetchCalls)
+	assert.InDelta(t, callers-1, testutil.ToFloat64(hg.metrics.coalescedWaiters), 0)
 }
 
-func TestHerdgate_DoConcurrentCallsAcrossInstancesNotCollapsed(t *testing.T) {
+func TestHerdgate_DoConcurrentCallsAcrossInstancesNotCoalesced(t *testing.T) {
 	provider := NewProvider()
 	hg1 := provider.New(inmemorystore.New())
 	hg2 := provider.New(inmemorystore.New())
 	instances := []*Herdgate{hg1, hg2}
-	assert.Equal(t, 2, countConcurrentFetchesAcross(t, instances))
+
+	fetchCalls := countConcurrentFetchesAcross(t, instances)
+	require.Equal(t, 2, fetchCalls)
+	assert.InDelta(t, 0, testutil.ToFloat64(hg1.metrics.coalescedWaiters), 0)
+}
+
+func TestHerdgate_DoCoordinationLeader(t *testing.T) {
+	store := &fakeStore{}
+	coord := &fakeCoordination{
+		acquireToken:    _token,
+		acquireAcquired: true,
+		releaseNotify:   make(chan releaseCall, 1),
+	}
+	hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+
+	want := []byte(_wantValue)
+	fetchCalls := 0
+	fetch := func(ctx context.Context) ([]byte, error) {
+		fetchCalls++
+		return want, nil
+	}
+
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, 1, fetchCalls)
+	assert.Equal(t, []acquireCall{{key: _key, ttl: _defaultLeaseDuration}}, coord.acquireCalls)
+	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_operationAcquire, _resultAcquired)), 0)
+
+	select {
+	case call := <-coord.releaseNotify:
+		assert.Equal(t, releaseCall{key: _key, token: _token}, call)
+	case <-time.After(time.Second):
+		t.Fatal("did not receive the expected call to Coordination.Release")
+	}
+}
+
+func TestHerdgate_DoCoordinationAcquireError(t *testing.T) {
+	testCases := map[string]*fakeCoordination{
+		_errorTestCase: {acquireErr: assert.AnError},
+		_panicTestCase: {acquirePanic: assert.AnError},
+	}
+
+	for name, coord := range testCases {
+		t.Run(name, func(t *testing.T) {
+			store := &fakeStore{}
+			hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+
+			want := []byte(_wantValue)
+			fetchCalls := 0
+			fetch := func(ctx context.Context) ([]byte, error) {
+				fetchCalls++
+				return want, nil
+			}
+
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.Equal(t, 1, fetchCalls)
+			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_operationAcquire, _resultError)), 0)
+		})
+	}
+}
+
+func TestHerdgate_DoCoordinationReleaseError(t *testing.T) {
+	store := &fakeStore{}
+	coord := &fakeCoordination{
+		acquireToken:    _token,
+		acquireAcquired: true,
+		releaseErr:      assert.AnError,
+		releaseNotify:   make(chan releaseCall, 1),
+	}
+	hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+
+	want := []byte(_wantValue)
+	fetchCalls := 0
+	fetch := func(ctx context.Context) ([]byte, error) {
+		fetchCalls++
+		return want, nil
+	}
+
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, 1, fetchCalls)
+
+	select {
+	case call := <-coord.releaseNotify:
+		assert.Equal(t, releaseCall{key: _key, token: _token}, call)
+	case <-time.After(time.Second):
+		t.Fatal("did not receive the expected call to Coordination.Release")
+	}
+}
+
+func TestHerdgate_DoCoordinationFollower(t *testing.T) {
+	store := inmemorystore.New()
+	coord := &fakeCoordination{acquireAcquired: false}
+	hg := NewProvider().New(store, WithCoordination(coord))
+
+	want := []byte(_wantValue)
+	fetchCalls := 0
+	fetch := func(ctx context.Context) ([]byte, error) {
+		fetchCalls++
+		return want, nil
+	}
+
+	go func() {
+		time.Sleep(2 * _followerPollInterval)
+		store.Set(t.Context(), _key, want, time.Minute)
+	}()
+
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+	require.NoError(t, err)
+	assert.Equal(t, want, got)
+	assert.Equal(t, 0, fetchCalls)
+	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_operationAcquire, _resultContended)), 0)
 }
 
 func TestHerdgate_DoDecodeNilCodec(t *testing.T) {
@@ -291,6 +416,23 @@ func TestHerdgate_DoDecodeNilCodec(t *testing.T) {
 	assert.Equal(t, jsonPayload{}, got)
 	assert.Equal(t, 0, calls)
 	assert.Empty(t, store.getCalls)
+}
+
+func TestHerdgate_DoDecodeFetchError(t *testing.T) {
+	store := &fakeStore{}
+	hg := &Herdgate{store: store, metrics: newMetrics()}
+	codec := &fakeCodec{}
+
+	wantErr := assert.AnError
+	fetch := func(ctx context.Context) (jsonPayload, error) {
+		return jsonPayload{}, wantErr
+	}
+
+	got, err := DoDecode(t.Context(), hg, _key, DoOptions{TTL: time.Minute, Codec: codec}, fetch)
+	require.ErrorIs(t, err, wantErr)
+	assert.Equal(t, jsonPayload{}, got)
+	assert.Empty(t, store.setCalls)
+	assert.Equal(t, 0, codec.marshalCalls)
 }
 
 func TestHerdgate_DoDecodeMarshalError(t *testing.T) {
@@ -380,6 +522,47 @@ func TestHerdgate_DoDecodeSequentialCallsCacheHit(t *testing.T) {
 	assert.Equal(t, 1, calls)
 	assert.Equal(t, 1, codec.marshalCalls)
 	assert.Equal(t, 2, codec.unmarshalCalls)
+}
+
+func TestHerdgate_GuardedReleaseMetrics(t *testing.T) {
+	testCases := map[string]struct {
+		coord      *fakeCoordination
+		wantResult string
+	}{
+		_successTestCase: {coord: &fakeCoordination{}, wantResult: _resultSuccess},
+		_errorTestCase:   {coord: &fakeCoordination{releaseErr: assert.AnError}, wantResult: _resultError},
+		_panicTestCase:   {coord: &fakeCoordination{releasePanic: _panicValue}, wantResult: _resultError},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			hg := &Herdgate{coordination: tc.coord, metrics: newMetrics()}
+
+			hg.guardedRelease(t.Context(), _key, _token)
+			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_operationRelease, tc.wantResult)), 0)
+		})
+	}
+}
+
+func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
+	store := &fakeStore{getFound: false}
+	hg := &Herdgate{store: store, metrics: newMetrics()}
+
+	ctx, cancel := context.WithTimeout(t.Context(), 250*time.Millisecond)
+	defer cancel()
+
+	value, found := hg.awaitLeaderValue(ctx, _key)
+	assert.Nil(t, value)
+	assert.False(t, found)
+}
+
+func TestHerdgate_AwaitLeaderValueStorePanic(t *testing.T) {
+	store := &fakeStore{getPanic: assert.AnError}
+	hg := &Herdgate{store: store, metrics: newMetrics()}
+
+	value, found := hg.awaitLeaderValue(t.Context(), _key)
+	assert.False(t, found)
+	assert.Nil(t, value)
 }
 
 func countConcurrentFetches(t *testing.T, hg *Herdgate, callers int) int {

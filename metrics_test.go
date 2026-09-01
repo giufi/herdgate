@@ -14,6 +14,12 @@ import (
 const (
 	_testResultSuccess = "success"
 	_testResultError   = "error"
+
+	_testResultAcquired  = "acquired"
+	_testResultContended = "contended"
+
+	_testOperationAcquire = "acquire"
+	_testOperationRelease = "release"
 )
 
 func TestMetrics_IncrementCacheHit(t *testing.T) {
@@ -45,11 +51,11 @@ func TestMetrics_IncrementCacheLookupError(t *testing.T) {
 
 func TestMetrics_RecordCacheWrite(t *testing.T) {
 	testCases := map[string]struct {
-		err   error
-		label string
+		err        error
+		wantResult string
 	}{
-		"success": {err: nil, label: _testResultSuccess},
-		"error":   {err: assert.AnError, label: _testResultError},
+		"success": {err: nil, wantResult: _testResultSuccess},
+		"error":   {err: assert.AnError, wantResult: _testResultError},
 	}
 
 	for name, tc := range testCases {
@@ -57,18 +63,60 @@ func TestMetrics_RecordCacheWrite(t *testing.T) {
 			m := newMetrics()
 
 			m.recordCacheWrite(tc.err)
-			assert.InDelta(t, 1, testutil.ToFloat64(m.cacheWrites.WithLabelValues(tc.label)), 0)
+			assert.InDelta(t, 1, testutil.ToFloat64(m.cacheWrites.WithLabelValues(tc.wantResult)), 0)
+		})
+	}
+}
+
+func TestMetrics_RecordAcquire(t *testing.T) {
+	testCases := map[string]struct {
+		acquired   bool
+		err        error
+		wantResult string
+	}{
+		"acquired":  {acquired: true, err: nil, wantResult: _testResultAcquired},
+		"contended": {acquired: false, err: nil, wantResult: _testResultContended},
+		"error":     {acquired: false, err: assert.AnError, wantResult: _testResultError},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			m := newMetrics()
+
+			m.recordAcquire(time.Now(), tc.acquired, tc.err)
+			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationAcquire, tc.wantResult)), 0)
+			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationAcquire, tc.wantResult)
+		})
+	}
+}
+
+func TestMetrics_RecordRelease(t *testing.T) {
+	testCases := map[string]struct {
+		err        error
+		wantResult string
+	}{
+		"success": {err: nil, wantResult: _testResultSuccess},
+		"error":   {err: assert.AnError, wantResult: _testResultError},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			m := newMetrics()
+
+			m.recordRelease(time.Now(), tc.err)
+			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationRelease, tc.wantResult)), 0)
+			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationRelease, tc.wantResult)
 		})
 	}
 }
 
 func TestMetrics_ObserveFetch(t *testing.T) {
 	testCases := map[string]struct {
-		err   error
-		label string
+		err        error
+		wantResult string
 	}{
-		"success": {err: nil, label: _testResultSuccess},
-		"error":   {err: assert.AnError, label: _testResultError},
+		"success": {err: nil, wantResult: _testResultSuccess},
+		"error":   {err: assert.AnError, wantResult: _testResultError},
 	}
 
 	for name, tc := range testCases {
@@ -76,9 +124,16 @@ func TestMetrics_ObserveFetch(t *testing.T) {
 			m := newMetrics()
 
 			m.observeFetch(time.Now(), tc.err)
-			assertHistogramObservedOnce(t, m.fetchDuration, tc.label)
+			assertHistogramObservedOnce(t, m.fetchDuration, tc.wantResult)
 		})
 	}
+}
+
+func TestMetrics_IncrementCoalescedWaiter(t *testing.T) {
+	m := newMetrics()
+
+	m.incrementCoalescedWaiter()
+	assert.InDelta(t, 1, testutil.ToFloat64(m.coalescedWaiters), 0)
 }
 
 func TestMetrics_Collectors(t *testing.T) {
@@ -101,6 +156,15 @@ func TestMetrics_Register(t *testing.T) {
 	}
 }
 
+func TestMetrics_Gather(t *testing.T) {
+	m := newMetrics()
+	registry := prometheus.NewPedanticRegistry()
+
+	require.NoError(t, registry.Register(m))
+	_, err := registry.Gather()
+	require.NoError(t, err)
+}
+
 func collectorFieldPointers(m *metrics) []uintptr {
 	collectorType := reflect.TypeFor[prometheus.Collector]()
 	value := reflect.ValueOf(*m)
@@ -108,9 +172,14 @@ func collectorFieldPointers(m *metrics) []uintptr {
 	var pointers []uintptr
 	for index := range value.NumField() {
 		field := value.Field(index)
-		if field.Type().Implements(collectorType) {
-			pointers = append(pointers, field.Pointer())
+		if !field.Type().Implements(collectorType) {
+			continue
 		}
+		// Interface-typed fields (e.g., prometheus.Counter) need unwrapping.
+		if field.Kind() == reflect.Interface {
+			field = field.Elem()
+		}
+		pointers = append(pointers, field.Pointer())
 	}
 
 	return pointers

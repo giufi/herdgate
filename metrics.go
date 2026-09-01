@@ -10,22 +10,32 @@ import (
 //
 // It implements [prometheus.Collector].
 type metrics struct {
-	cacheLookups  *prometheus.CounterVec
-	cacheWrites   *prometheus.CounterVec
-	fetchDuration *prometheus.HistogramVec
+	cacheLookups         *prometheus.CounterVec
+	cacheWrites          *prometheus.CounterVec
+	coordinationOps      *prometheus.CounterVec
+	coordinationDuration *prometheus.HistogramVec
+	fetchDuration        *prometheus.HistogramVec
+	coalescedWaiters     prometheus.Counter
 }
 
 var _ prometheus.Collector = (*metrics)(nil)
 
 const (
-	_labelResult = "result"
+	_labelResult    = "result"
+	_labelOperation = "operation"
 
-	_valueLookupHit   = "hit"
-	_valueLookupMiss  = "miss"
-	_valueLookupError = "error"
+	_resultLookupHit   = "hit"
+	_resultLookupMiss  = "miss"
+	_resultLookupError = "error"
 
-	_valueSuccess = "success"
-	_valueError   = "error"
+	_resultSuccess = "success"
+	_resultError   = "error"
+
+	_resultAcquired  = "acquired"
+	_resultContended = "contended"
+
+	_operationAcquire = "acquire"
+	_operationRelease = "release"
 )
 
 func newMetrics() *metrics {
@@ -38,43 +48,92 @@ func newMetrics() *metrics {
 			Name: "herdgate_cache_writes_total",
 			Help: "Total cache write attempts, by result.",
 		}, []string{_labelResult}),
+		coordinationOps: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herdgate_coordination_operations_total",
+			Help: "Total Coordination operations, by operation and result.",
+		}, []string{_labelOperation, _labelResult}),
+		coordinationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "herdgate_coordination_duration_seconds",
+			Help: "Duration of Coordination operations, in seconds, by operation and result.",
+		}, []string{_labelOperation, _labelResult}),
 		fetchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
 			Name: "herdgate_fetch_duration_seconds",
 			Help: "Duration of fetch calls, in seconds. With DoDecode, each duration also includes marshaling the fetched value.",
 		}, []string{_labelResult}),
+		coalescedWaiters: prometheus.NewCounter(prometheus.CounterOpts{
+			Name: "herdgate_coalesced_waiters_total",
+			Help: "Total callers that waited for an in-flight fetch result.",
+		}),
 	}
 }
 
 func (m *metrics) incrementCacheHit() {
-	m.cacheLookups.WithLabelValues(_valueLookupHit).Inc()
+	m.cacheLookups.WithLabelValues(_resultLookupHit).Inc()
 }
 
 func (m *metrics) incrementCacheMiss() {
-	m.cacheLookups.WithLabelValues(_valueLookupMiss).Inc()
+	m.cacheLookups.WithLabelValues(_resultLookupMiss).Inc()
 }
 
 func (m *metrics) incrementCacheLookupError() {
-	m.cacheLookups.WithLabelValues(_valueLookupError).Inc()
+	m.cacheLookups.WithLabelValues(_resultLookupError).Inc()
 }
 
 func (m *metrics) recordCacheWrite(err error) {
-	result := _valueSuccess
+	result := _resultSuccess
 	if err != nil {
-		result = _valueError
+		result = _resultError
 	}
 	m.cacheWrites.WithLabelValues(result).Inc()
 }
 
-func (m *metrics) observeFetch(start time.Time, err error) {
-	result := _valueSuccess
+func (m *metrics) recordAcquire(start time.Time, acquired bool, err error) {
+	var result string
+	switch {
+	case err != nil:
+		result = _resultError
+	case acquired:
+		result = _resultAcquired
+	default:
+		result = _resultContended
+	}
+	m.recordCoordinationOp(_operationAcquire, result, start)
+}
+
+func (m *metrics) recordRelease(start time.Time, err error) {
+	result := _resultSuccess
 	if err != nil {
-		result = _valueError
+		result = _resultError
+	}
+	m.recordCoordinationOp(_operationRelease, result, start)
+}
+
+func (m *metrics) recordCoordinationOp(op, result string, start time.Time) {
+	m.coordinationOps.WithLabelValues(op, result).Inc()
+	m.coordinationDuration.WithLabelValues(op, result).Observe(time.Since(start).Seconds())
+}
+
+func (m *metrics) observeFetch(start time.Time, err error) {
+	result := _resultSuccess
+	if err != nil {
+		result = _resultError
 	}
 	m.fetchDuration.WithLabelValues(result).Observe(time.Since(start).Seconds())
 }
 
+func (m *metrics) incrementCoalescedWaiter() {
+	m.coalescedWaiters.Inc()
+}
+
 func (m *metrics) collectors() []prometheus.Collector {
-	return []prometheus.Collector{m.cacheLookups, m.cacheWrites, m.fetchDuration}
+	return []prometheus.Collector{
+		m.cacheLookups,
+		m.cacheWrites,
+		m.coordinationOps,
+		m.coordinationDuration,
+		m.fetchDuration,
+		m.coalescedWaiters,
+	}
 }
 
 // Describe implements [prometheus.Collector].

@@ -7,16 +7,26 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/giufi/herdgate/internal/validation"
 	"golang.org/x/sync/singleflight"
 )
 
-const defaultFetchTimeout = 30 * time.Second
+const (
+	_defaultFetchTimeout            = 30 * time.Second
+	_defaultCoordinationCallTimeout = 1 * time.Second
+	_defaultLeaseDuration           = _defaultFetchTimeout + _defaultCoordinationCallTimeout + 1*time.Second // safety margin
+	_followerPollInterval           = 100 * time.Millisecond
+)
 
-// A Herdgate is a read-through cache backed by a [Store].
+// A Herdgate is a read-through cache backed by a [Store]. It performs
+// local request coalescing for concurrent fetches of the same key,
+// with optional support for distributed request coalescing via a
+// [Coordination].
 type Herdgate struct {
-	store   Store
-	metrics *metrics
-	group   singleflight.Group
+	store        Store
+	coordination Coordination
+	metrics      *metrics
+	group        singleflight.Group
 }
 
 // DoOptions holds the options for [Herdgate.Do] and [DoDecode].
@@ -47,14 +57,24 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 // Do returns the cached value for the key, if present. On a cache miss,
 // the value comes from fetch and is cached according to opts.
 //
-// Caching is best-effort: a failed read is treated as a miss, and a
-// value that was fetched successfully is still returned even if it could
-// not be cached.
+// Caching is best-effort: a failed read is treated as a miss, and a value
+// fetched successfully is still returned even if it could not be cached.
 //
-// Concurrent Do calls for the same key are collapsed into a single fetch.
-// The shared fetch ignores caller cancellation and is bounded by an
+// Concurrent Do calls for the same key are locally coalesced into a single
+// fetch. The shared fetch ignores caller cancellation and is bounded by an
 // internal timeout. Canceling ctx ends the wait, not the fetch: it runs
 // to completion and caches its result.
+//
+// If a [Coordination] is configured via the functional option
+// [WithCoordination], Do also performs distributed request coalescing: at
+// most one caller performs the fetch at a time, and other callers wait
+// for its result instead of fetching independently. If the leader
+// fetches successfully but fails to cache the result, a contended
+// caller waits the full lease duration before fetching on its own: its
+// total wait can then exceed the fetch timeout alone.
+//
+// Coordination is best-effort: it is bypassed if acquiring the lease
+// fails, and a failed release does not affect the caller.
 //
 // A panic from fetch is recovered and returned as an error.
 func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
@@ -63,12 +83,17 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 	}
 
 	sharedCtx := context.WithoutCancel(ctx)
+	coalesced := true
 	ch := hg.group.DoChan(key, func() (any, error) {
-		return hg.fetchAndStore(sharedCtx, key, opts.TTL, fetch)
+		coalesced = false
+		return hg.coordinatedFill(sharedCtx, key, opts.TTL, fetch)
 	})
 
 	select {
 	case res := <-ch:
+		if coalesced {
+			hg.metrics.incrementCoalescedWaiter()
+		}
 		if res.Err != nil {
 			return nil, res.Err
 		}
@@ -78,6 +103,7 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 		}
 		return val, nil
 	case <-ctx.Done():
+		_logger.Debug(ctx, "Context done", slog.String("key", key), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
 	}
 }
@@ -89,11 +115,11 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 // Even on a miss, the returned T is a copy decoded from the bytes
 // [Herdgate.Do] returns, not fetch's original return value.
 //
-// See [Herdgate.Do] for more details, such as caching, collapsing, and
+// See [Herdgate.Do] for more details, such as caching, coalescing, and
 // panic recovery.
 func DoDecode[T any](ctx context.Context, hg *Herdgate, key string, opts DoOptions, fetch func(ctx context.Context) (T, error)) (T, error) {
 	var zero T
-	if isNil(opts.Codec) {
+	if validation.IsNil(opts.Codec) {
 		return zero, errors.New("herdgate: DoOptions.Codec must not be nil")
 	}
 	raw, err := hg.Do(ctx, key, opts, func(ctx context.Context) ([]byte, error) {
@@ -141,8 +167,21 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 	return value, found
 }
 
-// fetchAndStore calls fetch and, on success, attempts to cache the result
-// for the key.
+// coordinatedFill attempts to fill the specified key's cache entry: it
+// obtains the value, either by calling fetch directly or, if a
+// [Coordination] is configured, by coordinating with other callers
+// first, and finally caches it.
+//
+// Coordination is optional and best-effort. If configured, coordinatedFill
+// first attempts to acquire the lease for key:
+//   - Won: proceed to fetch, then release the lease.
+//   - Lost (contended by another caller): wait up to _defaultLeaseDuration
+//     for that caller to cache the value in [Store], fetching directly
+//     if it times out.
+//   - Acquisition failed (error or panic): bypass Coordination and fetch
+//     directly, exactly as if none were configured. If the failure was
+//     due to a timeout, the lease may have been granted anyway and
+//     stays unreleased until it expires.
 //
 // Caching is best-effort on writes: a failed cache write doesn't prevent
 // the fetched value from being returned.
@@ -150,18 +189,40 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 // An unrecovered panic makes [singleflight.Group.DoChan] re-panic it on a
 // new goroutine instead of delivering it as an error to the caller.
 // Thus, it must never panic.
-func (hg *Herdgate) fetchAndStore(ctx context.Context, key string, ttl time.Duration, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
+func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Duration, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
 			err = fmt.Errorf("unexpected panic: %w", errFromPanic(ctx, r))
 		}
 	}()
 
+	if hg.coordination != nil {
+		switch token, acquired, acquireErr := hg.guardedAcquire(ctx, key); {
+		case acquireErr != nil:
+			_logger.Error(ctx, "Coordination.Acquire failed, fetching directly", slog.String("key", key), slog.Any("error", acquireErr))
+		case acquired:
+			// Release only after fetching and caching the value, so, if
+			// successfully cached, it is available to followers polling Store.
+			// Release in a separate goroutine, without affecting the caller.
+			defer func() {
+				go hg.guardedRelease(ctx, key, token)
+			}()
+		default:
+			// Lease already held by another caller.
+			if value, found := hg.awaitLeaderValue(ctx, key); found {
+				_logger.Debug(ctx, "Follower value found", slog.String("key", key))
+				return value, nil
+			}
+			_logger.Debug(ctx, "Follower wait timed out", slog.String("key", key))
+		}
+	}
+
 	value, err := hg.guardedFetch(ctx, fetch)
 	if err != nil {
 		_logger.Error(ctx, "Fetch failed", slog.String("key", key), slog.Any("error", err))
 		return nil, err
 	}
+	_logger.Debug(ctx, "Fetch succeeded", slog.String("key", key))
 
 	if err := hg.guardedStoreSet(ctx, key, value, ttl); err != nil {
 		_logger.Error(ctx, "Cache write failed, returning fetched value", slog.String("key", key), slog.Any("error", err))
@@ -171,9 +232,95 @@ func (hg *Herdgate) fetchAndStore(ctx context.Context, key string, ttl time.Dura
 	return value, nil
 }
 
+// guardedAcquire attempts to acquire the [Coordination] lease for the
+// specified key under a timeout, turning a panic into an error.
+func (hg *Herdgate) guardedAcquire(ctx context.Context, key string) (token string, acquired bool, err error) {
+	start := time.Now()
+	acquireCtx, cancel := context.WithTimeout(ctx, _defaultCoordinationCallTimeout)
+	defer cancel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			token, acquired = "", false
+			err = fmt.Errorf("coordination.Acquire panicked: %w", errFromPanic(ctx, r))
+		}
+		hg.metrics.recordAcquire(start, acquired, err)
+	}()
+
+	token, acquired, err = hg.coordination.Acquire(acquireCtx, key, _defaultLeaseDuration)
+	if err != nil {
+		return "", false, err
+	}
+	if acquired {
+		_logger.Debug(ctx, "Lease acquired", slog.String("key", key), slog.String("token", token))
+	} else {
+		_logger.Debug(ctx, "Lease contended", slog.String("key", key))
+	}
+	return token, acquired, nil
+}
+
+// guardedRelease attempts to release the Coordination lease for the
+// specified key under a timeout. A failure is logged and recorded,
+// without ever affecting [Herdgate.Do]'s caller.
+func (hg *Herdgate) guardedRelease(ctx context.Context, key, token string) {
+	start := time.Now()
+	releaseCtx, cancel := context.WithTimeout(ctx, _defaultCoordinationCallTimeout)
+	defer cancel()
+
+	var err error
+	defer func() {
+		if r := recover(); r != nil {
+			panicErr := errFromPanic(ctx, r)
+			err = fmt.Errorf("coordination.Release panicked: %w", panicErr)
+			_logger.Error(ctx, "Coordination.Release panicked",
+				slog.String("key", key), slog.String("token", token), slog.Any("error", panicErr))
+		}
+		hg.metrics.recordRelease(start, err)
+	}()
+
+	if err = hg.coordination.Release(releaseCtx, key, token); err != nil {
+		_logger.Error(ctx, "Coordination.Release failed",
+			slog.String("key", key), slog.String("token", token), slog.Any("error", err))
+		return
+	}
+	_logger.Debug(ctx, "Lease released", slog.String("key", key), slog.String("token", token))
+}
+
+// awaitLeaderValue polls [Store], under a timeout, for the value
+// another caller is expected to cache after winning the [Coordination]
+// lease, turning a panic into a miss.
+//
+// found reports whether the value was retrieved from [Store].
+func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string) (value []byte, found bool) {
+	pollCtx, cancel := context.WithTimeout(ctx, _defaultLeaseDuration)
+	defer cancel()
+
+	defer func() {
+		if r := recover(); r != nil {
+			value, found = nil, false
+			_logger.Error(ctx, "Poll panicked",
+				slog.String("key", key), slog.Any("error", errFromPanic(ctx, r)))
+		}
+	}()
+
+	ticker := time.NewTicker(_followerPollInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if value, found := hg.store.Get(pollCtx, key); found {
+				return value, true
+			}
+		case <-pollCtx.Done():
+			return nil, false
+		}
+	}
+}
+
 // guardedFetch runs fetch under a timeout, turning a panic into an error.
 //
-// Recovery happens here, not in fetchAndStore, so observeFetch labels
+// Recovery happens here, not in coordinatedFill, so observeFetch labels
 // the fetch as an error.
 func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
 	start := time.Now()
@@ -184,7 +331,7 @@ func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Con
 		hg.metrics.observeFetch(start, err)
 	}()
 
-	fetchCtx, cancel := context.WithTimeout(ctx, defaultFetchTimeout)
+	fetchCtx, cancel := context.WithTimeout(ctx, _defaultFetchTimeout)
 	defer cancel()
 	return fetch(fetchCtx)
 }
@@ -192,7 +339,7 @@ func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Con
 // guardedStoreSet caches the fetched value for the key, turning a panic
 // into an error.
 //
-// Recovery happens here, not in fetchAndStore, so recordCacheWrite labels
+// Recovery happens here, not in coordinatedFill, so recordCacheWrite labels
 // the write as an error.
 func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byte, ttl time.Duration) (err error) {
 	defer func() {

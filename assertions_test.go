@@ -9,9 +9,9 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func assertHistogramObservedOnce(t *testing.T, h *prometheus.HistogramVec, label string) {
+func assertHistogramObservedOnce(t *testing.T, h *prometheus.HistogramVec, labels ...string) {
 	t.Helper()
-	histogram, ok := h.WithLabelValues(label).(prometheus.Histogram)
+	histogram, ok := h.WithLabelValues(labels...).(prometheus.Histogram)
 	require.True(t, ok)
 	var sample dto.Metric
 	require.NoError(t, histogram.Write(&sample))

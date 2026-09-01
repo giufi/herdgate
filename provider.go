@@ -1,6 +1,7 @@
 package herdgate
 
 import (
+	"github.com/giufi/herdgate/internal/validation"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -50,14 +51,21 @@ func (p *Provider) Metrics() prometheus.Collector {
 // New creates a [Herdgate] backed by the given [Store] and sharing the
 // provider's metrics.
 //
+// It is configurable with functional options, applied in order before the
+// [Herdgate] is returned. An option may panic on invalid input.
+//
 // It panics if the given store is nil, or if p was not created with
 // [NewProvider].
-func (p *Provider) New(store Store) *Herdgate {
-	if isNil(store) {
+func (p *Provider) New(store Store, opts ...HerdgateOption) *Herdgate {
+	if validation.IsNil(store) {
 		panic("herdgate: store must not be nil")
 	}
 	p.checkMetrics()
-	return newHerdgate(store, p.metrics)
+	hg := newHerdgate(store, p.metrics)
+	for _, opt := range opts {
+		opt(hg)
+	}
+	return hg
 }
 
 func (p *Provider) checkMetrics() {

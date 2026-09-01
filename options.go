@@ -3,6 +3,7 @@ package herdgate
 import (
 	"fmt"
 
+	"github.com/giufi/herdgate/internal/validation"
 	"github.com/prometheus/client_golang/prometheus"
 )
 
@@ -18,11 +19,27 @@ type ProviderOption func(*Provider)
 // collector registered under the same metric names).
 func WithRegisterer(r prometheus.Registerer) ProviderOption {
 	return func(p *Provider) {
-		if isNil(r) {
+		if validation.IsNil(r) {
 			panic("herdgate: registerer must not be nil")
 		}
 		if err := r.Register(p.metrics); err != nil {
 			panic(fmt.Errorf("herdgate: metrics registration: %w", err))
 		}
+	}
+}
+
+// HerdgateOption is a functional option for [Provider.New], used to
+// configure a [Herdgate] during construction.
+type HerdgateOption func(*Herdgate)
+
+// WithCoordination sets c as the [Herdgate]'s [Coordination].
+//
+// It panics if c is nil.
+func WithCoordination(c Coordination) HerdgateOption {
+	return func(hg *Herdgate) {
+		if validation.IsNil(c) {
+			panic("herdgate: coordination must not be nil")
+		}
+		hg.coordination = c
 	}
 }

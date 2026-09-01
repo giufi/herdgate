@@ -1,4 +1,4 @@
-package herdgate
+package validation
 
 import (
 	"reflect"
@@ -42,7 +42,7 @@ func TestIsNil(t *testing.T) {
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			assert.Equal(t, tc.kind, reflect.ValueOf(tc.value).Kind())
-			assert.Equal(t, tc.want, isNil(tc.value))
+			assert.Equal(t, tc.want, IsNil(tc.value))
 		})
 	}
 }

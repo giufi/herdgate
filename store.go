@@ -6,6 +6,8 @@ import (
 )
 
 // Store is the interface for storing and retrieving key-value pairs with optional per-key TTL expiry.
+//
+// A Store must be safe for concurrent use by multiple goroutines.
 type Store interface {
 	// Get returns the value stored for the given key, and reports whether it was found.
 	//

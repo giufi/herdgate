@@ -32,6 +32,19 @@ func TestProviderOption_WithRegistererRegistered(t *testing.T) {
 	assert.True(t, registry.Unregister(p.metrics))
 }
 
+func TestHerdgateOption_WithCoordinationNilPanic(t *testing.T) {
+	assert.PanicsWithValue(t, "herdgate: coordination must not be nil", func() {
+		NewProvider().New(&fakeStore{}, WithCoordination(nil))
+	})
+}
+
+func TestHerdgateOption_WithCoordinationConfigured(t *testing.T) {
+	coord := &fakeCoordination{}
+
+	hg := NewProvider().New(&fakeStore{}, WithCoordination(coord))
+	assert.Same(t, coord, hg.coordination)
+}
+
 func recoverPanic(fn func()) (panicValue any) {
 	defer func() { panicValue = recover() }()
 	fn()
