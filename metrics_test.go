@@ -21,9 +21,10 @@ const (
 	_testResultRenewed = "renewed"
 	_testResultLost    = "lost"
 
-	_testOperationAcquire = "acquire"
-	_testOperationRelease = "release"
-	_testOperationRenew   = "renew"
+	_testOperationAcquire      = "acquire"
+	_testOperationAcquireRetry = "acquire_retry"
+	_testOperationRelease      = "release"
+	_testOperationRenew        = "renew"
 )
 
 func TestMetrics_IncrementCacheHit(t *testing.T) {
@@ -90,6 +91,28 @@ func TestMetrics_RecordCoordinationAcquire(t *testing.T) {
 			m.recordCoordinationAcquire(time.Now(), tc.acquired, tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationAcquire, tc.wantResult)), 0)
 			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationAcquire, tc.wantResult)
+		})
+	}
+}
+
+func TestMetrics_RecordCoordinationAcquireRetry(t *testing.T) {
+	testCases := map[string]struct {
+		acquired   bool
+		err        error
+		wantResult string
+	}{
+		_testResultAcquired:  {acquired: true, err: nil, wantResult: _testResultAcquired},
+		_testResultContended: {acquired: false, err: nil, wantResult: _testResultContended},
+		_testResultError:     {acquired: false, err: assert.AnError, wantResult: _testResultError},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			m := newMetrics()
+
+			m.recordCoordinationAcquireRetry(time.Now(), tc.acquired, tc.err)
+			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationAcquireRetry, tc.wantResult)), 0)
+			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationAcquireRetry, tc.wantResult)
 		})
 	}
 }

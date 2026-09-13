@@ -37,9 +37,10 @@ const (
 	_resultRenewed = "renewed"
 	_resultLost    = "lost"
 
-	_coordinationOperationAcquire = "acquire"
-	_coordinationOperationRelease = "release"
-	_coordinationOperationRenew   = "renew"
+	_coordinationOperationAcquire      = "acquire"
+	_coordinationOperationAcquireRetry = "acquire_retry"
+	_coordinationOperationRelease      = "release"
+	_coordinationOperationRenew        = "renew"
 )
 
 func newMetrics() *metrics {
@@ -102,6 +103,19 @@ func (m *metrics) recordCoordinationAcquire(start time.Time, acquired bool, err 
 		result = _resultContended
 	}
 	m.recordCoordinationOperation(_coordinationOperationAcquire, result, start)
+}
+
+func (m *metrics) recordCoordinationAcquireRetry(start time.Time, acquired bool, err error) {
+	var result string
+	switch {
+	case err != nil:
+		result = _resultError
+	case acquired:
+		result = _resultAcquired
+	default:
+		result = _resultContended
+	}
+	m.recordCoordinationOperation(_coordinationOperationAcquireRetry, result, start)
 }
 
 func (m *metrics) recordCoordinationRenew(start time.Time, renewed bool, err error) {

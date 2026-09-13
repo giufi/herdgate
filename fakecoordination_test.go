@@ -21,15 +21,27 @@ type releaseCall struct {
 	token string
 }
 
+type acquireResult struct {
+	token    string
+	acquired bool
+	err      error
+}
+
+type renewResult struct {
+	renewed bool
+	err     error
+}
+
+type releaseResult struct {
+	err error
+}
+
 type fakeCoordination struct {
-	acquireToken    string
-	acquireAcquired bool
-	acquireErr      error
+	acquireCalls []acquireCall
 
-	renewRenewed bool
-	renewErr     error
-
-	releaseErr error
+	acquireResults []acquireResult // one entry per Acquire call, subsequent calls repeat the last one. If empty, Acquire reports the lease as contended.
+	renewResults   []renewResult   // one entry per Renew call, subsequent calls repeat the last one. If empty, Renew reports the lease as lost.
+	releaseResults []releaseResult // one entry per Release call, subsequent calls repeat the last one. If empty, Release succeeds.
 
 	acquirePanic any
 	renewPanic   any
@@ -39,8 +51,6 @@ type fakeCoordination struct {
 
 	renewNotify   chan renewCall   // when non-nil, receives every Renew call
 	releaseNotify chan releaseCall // when non-nil, receives every Release call
-
-	acquireCalls []acquireCall
 }
 
 var _ Coordination = (*fakeCoordination)(nil)
@@ -50,7 +60,14 @@ func (f *fakeCoordination) Acquire(ctx context.Context, key string, ttl time.Dur
 	if f.acquirePanic != nil {
 		panic(f.acquirePanic)
 	}
-	return f.acquireToken, f.acquireAcquired, f.acquireErr
+	if len(f.acquireResults) == 0 {
+		return "", false, nil
+	}
+	result := f.acquireResults[0]
+	if len(f.acquireResults) > 1 {
+		f.acquireResults = f.acquireResults[1:]
+	}
+	return result.token, result.acquired, result.err
 }
 
 func (f *fakeCoordination) Renew(ctx context.Context, key, token string, ttl time.Duration) (bool, error) {
@@ -70,7 +87,14 @@ func (f *fakeCoordination) Renew(ctx context.Context, key, token string, ttl tim
 			return false, ctx.Err()
 		}
 	}
-	return f.renewRenewed, f.renewErr
+	if len(f.renewResults) == 0 {
+		return false, nil
+	}
+	result := f.renewResults[0]
+	if len(f.renewResults) > 1 {
+		f.renewResults = f.renewResults[1:]
+	}
+	return result.renewed, result.err
 }
 
 func (f *fakeCoordination) Release(ctx context.Context, key, token string) error {
@@ -83,5 +107,12 @@ func (f *fakeCoordination) Release(ctx context.Context, key, token string) error
 		default:
 		}
 	}
-	return f.releaseErr
+	if len(f.releaseResults) == 0 {
+		return nil
+	}
+	result := f.releaseResults[0]
+	if len(f.releaseResults) > 1 {
+		f.releaseResults = f.releaseResults[1:]
+	}
+	return result.err
 }

@@ -20,6 +20,7 @@ const (
 	_defaultHeartbeatCallTimeout = _defaultHeartbeatInterval
 
 	_followerPollInterval   = 100 * time.Millisecond
+	_electionRetryInterval  = _defaultLeaseTTL / 2
 	_defaultFollowerTimeout = _defaultFetchTimeout + _defaultCoordinationCallTimeout + 1*time.Second
 )
 
@@ -177,23 +178,8 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 // coordinatedFill attempts to fill the specified key's cache entry: it
 // obtains the value, either by calling fetch directly or, if a
 // [Coordination] is configured, by coordinating with other callers
-// first, and finally caches it.
-//
-// Coordination is optional and best-effort. If configured, coordinatedFill
-// first attempts to acquire the lease for key:
-//   - Won: keep the lease alive by renewing it periodically while
-//     fetching, then release it. If the lease stops being renewed
-//     mid-fetch and expires, another caller may fetch concurrently.
-//   - Lost (contended by another caller): wait for that caller to
-//     cache the value in [Store], up to _defaultFollowerTimeout,
-//     fetching directly if it times out.
-//   - Acquisition failed (error or panic): bypass Coordination and fetch
-//     directly, exactly as if none were configured. If the failure was
-//     due to a timeout, the lease may have been granted anyway and
-//     stays unreleased until it expires.
-//
-// Stopping the heartbeat and releasing the lease run on a separate
-// goroutine that can outlast this call.
+// first, and finally caches it. See [Herdgate.coordinate] for more
+// details.
 //
 // Caching is best-effort on writes: a failed cache write doesn't prevent
 // the fetched value from being returned.
@@ -208,34 +194,16 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 		}
 	}()
 
-	if hg.coordination != nil {
-		switch token, acquired, acquireErr := hg.guardedAcquire(ctx, key); {
-		case acquireErr != nil:
-			_logger.Error(ctx, "Coordination.Acquire failed, fetching directly", slog.String("key", key), slog.Any("error", acquireErr))
-		case acquired:
-			stopHeartbeat := hg.startHeartbeat(ctx, key, token)
-
-			// Release only after fetching and caching the value, so, if
-			// successfully cached, it is available to followers polling Store.
-			// Both run in a separate goroutine to avoid delaying coalesced
-			// callers on this key.
-			defer func() {
-				go func() {
-					stopHeartbeat()
-					hg.guardedRelease(ctx, key, token)
-				}()
-			}()
-		default:
-			// Lease already held by another caller.
-			if value, found := hg.awaitLeaderValue(ctx, key); found {
-				_logger.Debug(ctx, "Follower value found", slog.String("key", key))
-				return value, nil
-			}
-			_logger.Debug(ctx, "Follower wait timed out", slog.String("key", key))
-		}
+	value, found, release := hg.coordinate(ctx, key)
+	// The lease must be released only after fetching and caching the
+	// value, so, if successfully cached, it is available to followers.
+	// release is a no-op unless this caller was the leader.
+	defer release()
+	if found {
+		return value, nil
 	}
 
-	value, err := hg.guardedFetch(ctx, fetch)
+	value, err = hg.guardedFetch(ctx, fetch)
 	if err != nil {
 		_logger.Error(ctx, "Fetch failed", slog.String("key", key), slog.Any("error", err))
 		return nil, err
@@ -250,9 +218,93 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 	return value, nil
 }
 
+// coordinate attempts to acquire the [Coordination] lease for key, if
+// configured, so that at most one caller fetches it at a time:
+//   - No Coordination configured: bypassed.
+//   - Won: the returned release keeps the lease alive by renewing it
+//     periodically until called. If renewal stops mid-fetch and the
+//     lease expires, another caller may fetch concurrently.
+//   - Lost (contended by another caller): wait for the lease holder to
+//     cache the value, retrying the acquisition in case the holder
+//     stopped renewing, for about _defaultFollowerTimeout in total.
+//   - Acquisition failed (error or panic): bypass Coordination. If the
+//     failure was due to a timeout, the lease may have been granted
+//     anyway and stays unreleased until it expires.
+//
+// found reports that a follower obtained the leader's value, in
+// which case the caller must return it without ever calling fetch.
+//
+// release is a no-op unless the lease was won. When it was, calling
+// release stops the heartbeat and releases the lease, on a separate
+// goroutine that can outlast this call.
+func (hg *Herdgate) coordinate(ctx context.Context, key string) (value []byte, found bool, release func()) {
+	if hg.coordination == nil {
+		return nil, false, func() {}
+	}
+
+	waitCtx, cancel := context.WithTimeout(ctx, _defaultFollowerTimeout)
+	defer cancel()
+
+	token, acquired, acquireErr := hg.guardedAcquire(ctx, key)
+	// A failed poll or a failed lease acquisition ends the loop on
+	// purpose, leaving the caller to later fetch directly.
+	for acquireErr == nil && !acquired {
+		var pollErr error
+		value, found, pollErr = hg.awaitLeaderValue(waitCtx, key, _electionRetryInterval)
+		if found {
+			_logger.Debug(ctx, "Follower value found", slog.String("key", key))
+			return value, true, func() {}
+		}
+		if pollErr != nil || waitCtx.Err() != nil {
+			break
+		}
+		token, acquired, acquireErr = hg.guardedAcquireRetry(ctx, key)
+	}
+
+	switch {
+	case acquireErr != nil:
+		_logger.Error(ctx, "Coordination.Acquire failed, fetching directly", slog.String("key", key), slog.Any("error", acquireErr))
+	case acquired:
+		return nil, false, hg.holdLease(ctx, key, token)
+	default:
+		_logger.Debug(ctx, "Follower gave up waiting, fetching directly", slog.String("key", key))
+	}
+	return nil, false, func() {}
+}
+
+// holdLease starts renewing the lease already acquired for the
+// specified key and token.
+//
+// The returned function stops the renewal and releases the lease, on
+// a separate goroutine to avoid delaying callers coalesced on the
+// specified key.
+func (hg *Herdgate) holdLease(ctx context.Context, key, token string) (release func()) {
+	stopHeartbeat := hg.startHeartbeat(ctx, key, token)
+	return func() {
+		go func() {
+			stopHeartbeat()
+			hg.guardedRelease(ctx, key, token)
+		}()
+	}
+}
+
 // guardedAcquire attempts to acquire the [Coordination] lease for the
 // specified key under a timeout, turning a panic into an error.
 func (hg *Herdgate) guardedAcquire(ctx context.Context, key string) (token string, acquired bool, err error) {
+	return hg.guardedAcquireWith(ctx, key, hg.metrics.recordCoordinationAcquire)
+}
+
+// guardedAcquireRetry mirrors [Herdgate.guardedAcquire], for a lease
+// acquisition retry operation.
+// Retries are recorded under a different coordination operation.
+func (hg *Herdgate) guardedAcquireRetry(ctx context.Context, key string) (token string, acquired bool, err error) {
+	return hg.guardedAcquireWith(ctx, key, hg.metrics.recordCoordinationAcquireRetry)
+}
+
+// guardedAcquireWith attempts to acquire the [Coordination] lease for
+// the specified key under a timeout, turning a panic into an error,
+// and recording the outcome via recordAcquire.
+func (hg *Herdgate) guardedAcquireWith(ctx context.Context, key string, recordAcquire func(start time.Time, acquired bool, err error)) (token string, acquired bool, err error) {
 	start := time.Now()
 	acquireCtx, cancel := context.WithTimeout(ctx, _defaultCoordinationCallTimeout)
 	defer cancel()
@@ -262,7 +314,7 @@ func (hg *Herdgate) guardedAcquire(ctx context.Context, key string) (token strin
 			token, acquired = "", false
 			err = fmt.Errorf("coordination.Acquire panicked: %w", errFromPanic(ctx, r))
 		}
-		hg.metrics.recordCoordinationAcquire(start, acquired, err)
+		recordAcquire(start, acquired, err)
 	}()
 
 	token, acquired, err = hg.coordination.Acquire(acquireCtx, key, _defaultLeaseTTL)
@@ -378,18 +430,21 @@ func (hg *Herdgate) guardedRelease(ctx context.Context, key, token string) {
 
 // awaitLeaderValue polls [Store], under a timeout, for the value
 // another caller is expected to cache after winning the [Coordination]
-// lease, turning a panic into a miss.
+// lease, turning a panic into an error.
 //
 // found reports whether the value was retrieved from [Store].
-func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string) (value []byte, found bool) {
-	pollCtx, cancel := context.WithTimeout(ctx, _defaultFollowerTimeout)
+//
+// A non-nil error means the poll failed.
+func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout time.Duration) (value []byte, found bool, err error) {
+	pollCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	defer func() {
 		if r := recover(); r != nil {
+			panicErr := errFromPanic(ctx, r)
 			value, found = nil, false
-			_logger.Error(ctx, "Poll panicked",
-				slog.String("key", key), slog.Any("error", errFromPanic(ctx, r)))
+			err = fmt.Errorf("store.Get panicked: %w", panicErr)
+			_logger.Error(ctx, "Poll panicked", slog.String("key", key), slog.Any("error", panicErr))
 		}
 	}()
 
@@ -400,10 +455,10 @@ func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string) (value []b
 		select {
 		case <-ticker.C:
 			if value, found := hg.store.Get(pollCtx, key); found {
-				return value, true
+				return value, true, nil
 			}
 		case <-pollCtx.Done():
-			return nil, false
+			return nil, false, nil
 		}
 	}
 }
