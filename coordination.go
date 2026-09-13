@@ -12,20 +12,38 @@ import (
 // A Coordination must be safe for concurrent use by multiple goroutines.
 type Coordination interface {
 	// Acquire attempts to take the lease for the given key atomically.
-	// ttl determines how long the lease stays valid. The lease must never
-	// outlive that window, expiring on its own even with no call to
-	// [Coordination.Release]. Callers must provide a ttl greater than
-	// zero.
 	//
-	// acquired reports whether this call won the lease. False with a nil
-	// error means another caller currently holds it, which is expected
-	// behavior. False with a non-nil error means the acquisition attempt
-	// failed.
+	// ttl determines how long the lease stays valid. The lease expires on
+	// its own once ttl elapses, even with no call to [Coordination.Release],
+	// unless renewed via [Coordination.Renew]. Callers must provide a ttl
+	// greater than zero.
+	//
+	// acquired reports whether this call won the lease.
+	// False with a nil error means another caller currently holds it, which
+	// is expected behavior.
+	// False with a non-nil error means the acquisition attempt failed.
 	//
 	// token identifies this acquisition and is required later by
-	// [Coordination.Release]. It is empty unless acquired is true, in
-	// which case it is unique to this acquisition.
+	// [Coordination.Renew] and [Coordination.Release]. It is empty unless
+	// acquired is true, in which case it is unique to this acquisition.
 	Acquire(ctx context.Context, key string, ttl time.Duration) (token string, acquired bool, err error)
+
+	// Renew attempts to extend the lease for the given key, using the
+	// token returned by [Coordination.Acquire].
+	//
+	// ttl determines how long the lease stays valid after this renewal. As
+	// with [Coordination.Acquire], callers must provide a ttl greater than
+	// zero.
+	//
+	// The lease is renewed only if the token still matches the one
+	// currently stored for that key. The comparison and renewal must be
+	// atomic.
+	//
+	// renewed reports whether the renewal succeeded under that token.
+	// False with a nil error means the lease was already lost, which
+	// is expected behavior.
+	// False with a non-nil error means the renewal attempt failed.
+	Renew(ctx context.Context, key, token string, ttl time.Duration) (renewed bool, err error)
 
 	// Release attempts to free the lease for the given key, using the
 	// token returned by [Coordination.Acquire]. The lease is freed only if

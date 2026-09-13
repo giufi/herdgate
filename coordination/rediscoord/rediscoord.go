@@ -18,6 +18,14 @@ import (
 
 const _lockKeyPrefix = "herdgate:lock:"
 
+var _renewScript = redis.NewScript(`
+local currentToken = redis.call("get", KEYS[1])
+if currentToken == ARGV[1] then
+	return redis.call("pexpire", KEYS[1], ARGV[2])
+end
+return 0
+`)
+
 var _releaseScript = redis.NewScript(`
 local currentToken = redis.call("get", KEYS[1])
 if currentToken == ARGV[1] then
@@ -43,8 +51,8 @@ func New(client redis.UniversalClient) *Coordination {
 }
 
 // Acquire attempts to take the lease for the given key. Redis expires the
-// entry on its own once ttl elapses, so the lease is never held past that
-// window even if [Coordination.Release] is never called.
+// entry on its own once ttl elapses, even if [Coordination.Release] is
+// never called, unless renewed via [Coordination.Renew].
 //
 // If the provided ttl is not greater than zero, it returns an error.
 //
@@ -67,6 +75,25 @@ func (c *Coordination) Acquire(ctx context.Context, key string, ttl time.Duratio
 		return "", false, nil
 	}
 	return token, true, nil
+}
+
+// Renew attempts to extend the lease for the given key, resetting its
+// expiry to ttl. The lease is renewed only if the provided token still
+// matches.
+//
+// The comparison and renewal happen atomically via a Lua script.
+//
+// If the provided ttl is not greater than zero, it returns an error.
+func (c *Coordination) Renew(ctx context.Context, key, token string, ttl time.Duration) (renewed bool, err error) {
+	if ttl <= 0 {
+		return false, fmt.Errorf("rediscoord: ttl must be greater than zero, got %s", ttl)
+	}
+
+	result, err := _renewScript.Run(ctx, c.client, []string{lockKey(key)}, token, ttl.Milliseconds()).Int()
+	if err != nil {
+		return false, fmt.Errorf("rediscoord: %w", err)
+	}
+	return result == 1, nil
 }
 
 // Release attempts to free the lease for the given key.

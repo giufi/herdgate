@@ -18,8 +18,12 @@ const (
 	_testResultAcquired  = "acquired"
 	_testResultContended = "contended"
 
+	_testResultRenewed = "renewed"
+	_testResultLost    = "lost"
+
 	_testOperationAcquire = "acquire"
 	_testOperationRelease = "release"
+	_testOperationRenew   = "renew"
 )
 
 func TestMetrics_IncrementCacheHit(t *testing.T) {
@@ -68,7 +72,7 @@ func TestMetrics_RecordCacheWrite(t *testing.T) {
 	}
 }
 
-func TestMetrics_RecordAcquire(t *testing.T) {
+func TestMetrics_RecordCoordinationAcquire(t *testing.T) {
 	testCases := map[string]struct {
 		acquired   bool
 		err        error
@@ -83,14 +87,36 @@ func TestMetrics_RecordAcquire(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m := newMetrics()
 
-			m.recordAcquire(time.Now(), tc.acquired, tc.err)
+			m.recordCoordinationAcquire(time.Now(), tc.acquired, tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationAcquire, tc.wantResult)), 0)
 			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationAcquire, tc.wantResult)
 		})
 	}
 }
 
-func TestMetrics_RecordRelease(t *testing.T) {
+func TestMetrics_RecordCoordinationRenew(t *testing.T) {
+	testCases := map[string]struct {
+		renewed    bool
+		err        error
+		wantResult string
+	}{
+		_testResultRenewed: {renewed: true, err: nil, wantResult: _testResultRenewed},
+		_testResultLost:    {renewed: false, err: nil, wantResult: _testResultLost},
+		_testResultError:   {renewed: false, err: assert.AnError, wantResult: _testResultError},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			m := newMetrics()
+
+			m.recordCoordinationRenew(time.Now(), tc.renewed, tc.err)
+			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationRenew, tc.wantResult)), 0)
+			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationRenew, tc.wantResult)
+		})
+	}
+}
+
+func TestMetrics_RecordCoordinationRelease(t *testing.T) {
 	testCases := map[string]struct {
 		err        error
 		wantResult string
@@ -103,7 +129,7 @@ func TestMetrics_RecordRelease(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m := newMetrics()
 
-			m.recordRelease(time.Now(), tc.err)
+			m.recordCoordinationRelease(time.Now(), tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationRelease, tc.wantResult)), 0)
 			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationRelease, tc.wantResult)
 		})

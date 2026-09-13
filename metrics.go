@@ -34,8 +34,12 @@ const (
 	_resultAcquired  = "acquired"
 	_resultContended = "contended"
 
-	_operationAcquire = "acquire"
-	_operationRelease = "release"
+	_resultRenewed = "renewed"
+	_resultLost    = "lost"
+
+	_coordinationOperationAcquire = "acquire"
+	_coordinationOperationRelease = "release"
+	_coordinationOperationRenew   = "renew"
 )
 
 func newMetrics() *metrics {
@@ -87,7 +91,7 @@ func (m *metrics) recordCacheWrite(err error) {
 	m.cacheWrites.WithLabelValues(result).Inc()
 }
 
-func (m *metrics) recordAcquire(start time.Time, acquired bool, err error) {
+func (m *metrics) recordCoordinationAcquire(start time.Time, acquired bool, err error) {
 	var result string
 	switch {
 	case err != nil:
@@ -97,20 +101,33 @@ func (m *metrics) recordAcquire(start time.Time, acquired bool, err error) {
 	default:
 		result = _resultContended
 	}
-	m.recordCoordinationOp(_operationAcquire, result, start)
+	m.recordCoordinationOperation(_coordinationOperationAcquire, result, start)
 }
 
-func (m *metrics) recordRelease(start time.Time, err error) {
+func (m *metrics) recordCoordinationRenew(start time.Time, renewed bool, err error) {
+	var result string
+	switch {
+	case err != nil:
+		result = _resultError
+	case renewed:
+		result = _resultRenewed
+	default:
+		result = _resultLost
+	}
+	m.recordCoordinationOperation(_coordinationOperationRenew, result, start)
+}
+
+func (m *metrics) recordCoordinationRelease(start time.Time, err error) {
 	result := _resultSuccess
 	if err != nil {
 		result = _resultError
 	}
-	m.recordCoordinationOp(_operationRelease, result, start)
+	m.recordCoordinationOperation(_coordinationOperationRelease, result, start)
 }
 
-func (m *metrics) recordCoordinationOp(op, result string, start time.Time) {
-	m.coordinationOps.WithLabelValues(op, result).Inc()
-	m.coordinationDuration.WithLabelValues(op, result).Observe(time.Since(start).Seconds())
+func (m *metrics) recordCoordinationOperation(operation, result string, start time.Time) {
+	m.coordinationOps.WithLabelValues(operation, result).Inc()
+	m.coordinationDuration.WithLabelValues(operation, result).Observe(time.Since(start).Seconds())
 }
 
 func (m *metrics) observeFetch(start time.Time, err error) {
