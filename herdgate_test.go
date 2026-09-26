@@ -557,16 +557,15 @@ func TestHerdgate_DoCoordinationConcurrentCallsAcrossInstancesCoalesced(t *testi
 
 	const callersPerInstance = 3
 	var wg sync.WaitGroup
-	wg.Add(2 * callersPerInstance)
+	errs := make(chan error, 2*callersPerInstance)
 
 	startConcurrentDoCalls := func(hg *Herdgate, fetch func(context.Context) ([]byte, error)) {
 		for range callersPerInstance {
-			go func() {
-				defer wg.Done()
+			wg.Go(func() {
 				got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-				assert.NoError(t, err)
+				errs <- err
 				assert.Equal(t, want, got)
-			}()
+			})
 		}
 	}
 
@@ -591,6 +590,11 @@ func TestHerdgate_DoCoordinationConcurrentCallsAcrossInstancesCoalesced(t *testi
 
 	close(unblockLeaderFetch)
 	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
 
 	assert.Equal(t, int64(1), calls.Load())
 	assert.InDelta(t, 1, testutil.ToFloat64(hg1.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultAcquired)), 0)
@@ -903,13 +907,11 @@ func TestHerdgate_CloseConcurrencySafe(t *testing.T) {
 
 	const callers = 10
 	var wg sync.WaitGroup
-	wg.Add(callers)
 	errs := make(chan error, callers)
 	for range callers {
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			errs <- hg.Close(t.Context())
-		}()
+		})
 	}
 	wg.Wait()
 	close(errs)
@@ -1193,11 +1195,9 @@ func countConcurrentFetchesAcross(t *testing.T, instances []*Herdgate) int {
 	}
 	baseLeaderCacheMisses := testutil.ToFloat64(leader.metrics.cacheLookups.WithLabelValues(_resultLookupMiss))
 
-	var done sync.WaitGroup
-	done.Add(len(instances))
+	var wg sync.WaitGroup
 	errs := make(chan error, len(instances))
 	callDo := func(hg *Herdgate) {
-		defer done.Done()
 		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
 			calls.Add(1)
 			closeOnce.Do(func() { close(leaderStarted) })
@@ -1214,14 +1214,14 @@ func countConcurrentFetchesAcross(t *testing.T, instances []*Herdgate) int {
 		assert.Equal(t, want, got)
 	}
 
-	go callDo(leader)
+	wg.Go(func() { callDo(leader) })
 	<-leaderStarted
 
 	for _, hg := range followers {
-		go callDo(hg)
+		wg.Go(func() { callDo(hg) })
 	}
 
-	done.Wait()
+	wg.Wait()
 	close(errs)
 
 	for err := range errs {
