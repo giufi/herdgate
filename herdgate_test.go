@@ -801,6 +801,7 @@ func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
 	fetchStarted1, fetchStarted2 := make(chan struct{}), make(chan struct{})
 	unblockFetch1, unblockFetch2 := make(chan struct{}), make(chan struct{})
 	doDone1, doDone2 := make(chan struct{}), make(chan struct{})
+	errs := make(chan error, 2)
 
 	callDo := func(key string, want []byte, fetchStarted, unblockFetch, doDone chan struct{}) {
 		defer close(doDone)
@@ -809,7 +810,7 @@ func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
 			<-unblockFetch
 			return want, nil
 		})
-		require.NoError(t, err)
+		errs <- err
 		assert.Equal(t, want, got)
 	}
 
@@ -833,6 +834,10 @@ func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
 
 	close(unblockFetch2)
 	<-doDone2
+
+	for range 2 {
+		require.NoError(t, <-errs)
+	}
 
 	select {
 	case err := <-closeDone:
