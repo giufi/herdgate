@@ -3,12 +3,13 @@ module github.com/giufi/herdgate
 go 1.26.0
 
 require (
-	github.com/alicebob/miniredis/v2 v2.38.0
+	github.com/alicebob/miniredis/v2 v2.39.0
 	github.com/prometheus/client_golang v1.24.1
-	github.com/prometheus/client_model v0.6.2
+	github.com/prometheus/client_model v0.6.3
 	github.com/redis/go-redis/v9 v9.22.0
 	github.com/stretchr/testify v1.12.1
-	golang.org/x/sync v0.22.0
+	go.uber.org/goleak v1.3.0
+	golang.org/x/sync v0.23.0
 )
 
 require (

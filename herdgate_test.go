@@ -13,6 +13,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"go.uber.org/goleak"
 )
 
 const (
@@ -31,6 +32,10 @@ const (
 	_errorTestCase   = "error"
 	_panicTestCase   = "panic"
 )
+
+func TestMain(m *testing.M) {
+	goleak.VerifyTestMain(m)
+}
 
 func TestHerdgate_DoCacheMiss(t *testing.T) {
 	want := []byte(_wantValue)
