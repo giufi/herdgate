@@ -655,6 +655,265 @@ func TestHerdgate_DoDecodeSequentialCallsCacheHit(t *testing.T) {
 	assert.Equal(t, 2, codec.unmarshalCalls)
 }
 
+func TestHerdgate_DoAfterClose(t *testing.T) {
+	testCases := map[string]struct {
+		store   *fakeStore
+		wantVal []byte
+		wantErr error
+	}{
+		"cache hit":  {store: &fakeStore{getValue: []byte(_wantValue), getFound: true}, wantVal: []byte(_wantValue)},
+		"cache miss": {store: &fakeStore{}, wantErr: ErrClosed},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			hg := NewProvider().New(tc.store)
+			require.NoError(t, hg.Close(t.Context()))
+
+			fetchCalls := 0
+			fetch := func(context.Context) ([]byte, error) {
+				fetchCalls++
+				return nil, nil
+			}
+
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+			if tc.wantErr != nil {
+				require.ErrorIs(t, err, tc.wantErr)
+			} else {
+				require.NoError(t, err)
+			}
+			assert.Equal(t, tc.wantVal, got)
+			assert.Equal(t, 0, fetchCalls)
+			assert.Equal(t, []string{_key}, tc.store.getCalls)
+		})
+	}
+}
+
+func TestHerdgate_CloseInFlightFetch(t *testing.T) {
+	hg := NewProvider().New(&fakeStore{})
+
+	want := []byte(_wantValue)
+	fetchStarted := make(chan struct{})
+	unblockFetch := make(chan struct{})
+	doDone := make(chan struct{})
+	go func() {
+		defer close(doDone)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+			close(fetchStarted)
+			<-unblockFetch
+			return want, nil
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, want, got)
+	}()
+	<-fetchStarted
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- hg.Close(t.Context()) }()
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned before the in-flight fetch finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(unblockFetch)
+	<-doDone
+
+	select {
+	case err := <-closeDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after the fetch finished")
+	}
+}
+
+func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
+	hg := NewProvider().New(inmemorystore.New())
+
+	key1, key2 := _key+"1", _key+"2" // the same key would coalesce into one flight
+	want1, want2 := []byte(_wantValue+"1"), []byte(_wantValue+"2")
+
+	fetchStarted1, fetchStarted2 := make(chan struct{}), make(chan struct{})
+	unblockFetch1, unblockFetch2 := make(chan struct{}), make(chan struct{})
+	doDone1, doDone2 := make(chan struct{}), make(chan struct{})
+
+	callDo := func(key string, want []byte, fetchStarted, unblockFetch, doDone chan struct{}) {
+		defer close(doDone)
+		got, err := hg.Do(t.Context(), key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+			close(fetchStarted)
+			<-unblockFetch
+			return want, nil
+		})
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+	}
+
+	go callDo(key1, want1, fetchStarted1, unblockFetch1, doDone1)
+	go callDo(key2, want2, fetchStarted2, unblockFetch2, doDone2)
+
+	<-fetchStarted1
+	<-fetchStarted2
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- hg.Close(t.Context()) }()
+
+	close(unblockFetch1)
+	<-doDone1
+
+	select {
+	case <-closeDone:
+		t.Fatal("Close returned after only the first of two fetches finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(unblockFetch2)
+	<-doDone2
+
+	select {
+	case err := <-closeDone:
+		require.NoError(t, err)
+	case <-time.After(time.Second):
+		t.Fatal("Close did not return after both fetches finished")
+	}
+}
+
+func TestHerdgate_CloseContextCanceled(t *testing.T) {
+	store := &fakeStore{setNotify: make(chan setCall, 1)}
+	hg := NewProvider().New(store)
+
+	want := []byte(_wantValue)
+	fetchStarted := make(chan struct{})
+	unblockFetch := make(chan struct{})
+	doDone := make(chan struct{})
+	go func() {
+		defer close(doDone)
+		_, _ = hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+			close(fetchStarted)
+			<-unblockFetch
+			return want, nil
+		})
+	}()
+	<-fetchStarted
+
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	require.ErrorIs(t, hg.Close(ctx), context.DeadlineExceeded)
+
+	close(unblockFetch)
+	<-doDone
+
+	select {
+	case call := <-store.setNotify:
+		assert.Equal(t, setCall{key: _key, value: want, ttl: time.Minute}, call)
+	case <-time.After(time.Second):
+		t.Fatal("did not receive the expected call to Store.Set")
+	}
+}
+
+func TestHerdgate_CloseExpiredContextWithoutFlights(t *testing.T) {
+	hg := NewProvider().New(&fakeStore{})
+
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+
+	for range 100 {
+		require.NoError(t, hg.Close(ctx))
+	}
+}
+
+func TestHerdgate_CloseIdempotent(t *testing.T) {
+	hg := NewProvider().New(&fakeStore{})
+
+	require.NoError(t, hg.Close(t.Context()))
+	require.NoError(t, hg.Close(t.Context()))
+}
+
+func TestHerdgate_CloseConcurrencySafe(t *testing.T) {
+	hg := NewProvider().New(&fakeStore{})
+
+	const callers = 10
+	var wg sync.WaitGroup
+	wg.Add(callers)
+	errs := make(chan error, callers)
+	for range callers {
+		go func() {
+			defer wg.Done()
+			errs <- hg.Close(t.Context())
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	for err := range errs {
+		require.NoError(t, err)
+	}
+}
+
+func TestHerdgate_CloseCoordinationLeaseHeld(t *testing.T) {
+	coord := &fakeCoordination{
+		acquireResults: []acquireResult{{token: _token, acquired: true}},
+		renewResults:   []renewResult{{renewed: true}},
+		renewNotify:    make(chan renewCall, 10),
+		releaseNotify:  make(chan releaseCall, 1),
+	}
+	hg := NewProvider().New(&fakeStore{}, WithCoordination(coord))
+
+	want := []byte(_wantValue)
+	fetchStarted := make(chan struct{})
+	unblockFetch := make(chan struct{})
+	doDone := make(chan struct{})
+	go func() {
+		defer close(doDone)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+			close(fetchStarted)
+			<-unblockFetch
+			return want, nil
+		})
+		assert.NoError(t, err)
+		assert.Equal(t, want, got)
+	}()
+	<-fetchStarted
+
+	// Wait for a renewal. This confirms the heartbeat is running, so the
+	// lease is still held when Close is called next
+	select {
+	case <-coord.renewNotify:
+	case <-time.After(time.Second):
+		t.Fatal("did not receive the expected call to Coordination.Renew")
+	}
+
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- hg.Close(t.Context()) }()
+
+	select {
+	case <-coord.releaseNotify:
+		t.Fatal("Coordination.Release was called before the fetch finished")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(unblockFetch)
+	<-doDone
+
+	select {
+	case call := <-coord.releaseNotify:
+		assert.Equal(t, releaseCall{key: _key, token: _token}, call)
+	case <-time.After(time.Second):
+		t.Fatal("did not receive the expected call to Coordination.Release")
+	}
+
+	require.NoError(t, <-closeDone)
+}
+
+func TestHerdgate_AdmitFlightAfterClose(t *testing.T) {
+	hg := NewProvider().New(&fakeStore{})
+	require.NoError(t, hg.Close(t.Context()))
+
+	done, admitted := hg.admitFlight()
+	assert.False(t, admitted)
+	assert.NotPanics(t, done)
+}
+
 func TestHerdgate_StartHeartbeatPeriodicRenewal(t *testing.T) {
 	coord := &fakeCoordination{renewResults: []renewResult{{renewed: true}}, renewNotify: make(chan renewCall, 10)}
 	hg := &Herdgate{coordination: coord, metrics: newMetrics()}

@@ -54,6 +54,8 @@ func (p *Provider) Metrics() prometheus.Collector {
 // It is configurable with functional options, applied in order before the
 // [Herdgate] is returned. An option may panic on invalid input.
 //
+// Call [Herdgate.Close] on the returned value when it is no longer needed.
+//
 // It panics if the given store is nil, or if p was not created with
 // [NewProvider].
 func (p *Provider) New(store Store, opts ...HerdgateOption) *Herdgate {

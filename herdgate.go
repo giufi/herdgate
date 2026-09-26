@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/giufi/herdgate/internal/validation"
@@ -24,15 +25,25 @@ const (
 	_defaultFollowerTimeout = _defaultFetchTimeout + _defaultCoordinationCallTimeout + 1*time.Second
 )
 
+// ErrClosed is returned by [Herdgate.Do] and [DoDecode] when a value must
+// be fetched after [Herdgate.Close] has been called.
+var ErrClosed = errors.New("herdgate: closed")
+
 // A Herdgate is a read-through cache backed by a [Store]. It performs
-// local request coalescing for concurrent fetches of the same key,
-// with optional support for distributed request coalescing via a
-// [Coordination].
+// local request coalescing for concurrent fetches of the same key, with
+// optional support for distributed request coalescing via a [Coordination].
+//
+// Call [Herdgate.Close] when it is no longer needed.
 type Herdgate struct {
 	store        Store
 	coordination Coordination
 	metrics      *metrics
 	group        singleflight.Group
+
+	closedMu    sync.Mutex
+	closed      bool
+	inFlight    int
+	flightsDone chan struct{}
 }
 
 // DoOptions holds the options for [Herdgate.Do] and [DoDecode].
@@ -55,8 +66,9 @@ type DoOptions struct {
 // newHerdgate creates a [Herdgate] backed by the given [Store] and metrics.
 func newHerdgate(store Store, m *metrics) *Herdgate {
 	return &Herdgate{
-		store:   store,
-		metrics: m,
+		store:       store,
+		metrics:     m,
+		flightsDone: make(chan struct{}),
 	}
 }
 
@@ -84,6 +96,9 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 // mid-fetch does not stop the fetch, letting another caller fetch
 // concurrently.
 //
+// Do returns [ErrClosed] on a cache miss, once [Herdgate.Close] has
+// been called.
+//
 // A panic from fetch is recovered and returned as an error.
 func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
 	if cached, ok := hg.guardedStoreGet(ctx, key); ok {
@@ -94,6 +109,11 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 	coalesced := true
 	ch := hg.group.DoChan(key, func() (any, error) {
 		coalesced = false
+		done, admitted := hg.admitFlight()
+		if !admitted {
+			return nil, ErrClosed
+		}
+		defer done()
 		return hg.coordinatedFill(sharedCtx, key, opts.TTL, fetch)
 	})
 
@@ -123,8 +143,8 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 // Even on a miss, the returned T is a copy decoded from the bytes
 // [Herdgate.Do] returns, not fetch's original return value.
 //
-// See [Herdgate.Do] for more details, such as caching, coalescing, and
-// panic recovery.
+// See [Herdgate.Do] for more details, such as caching, coalescing,
+// panic recovery, and closing.
 func DoDecode[T any](ctx context.Context, hg *Herdgate, key string, opts DoOptions, fetch func(ctx context.Context) (T, error)) (T, error) {
 	var zero T
 	if validation.IsNil(opts.Codec) {
@@ -147,6 +167,38 @@ func DoDecode[T any](ctx context.Context, hg *Herdgate, key string, opts DoOptio
 		return zero, err
 	}
 	return decoded, nil
+}
+
+// Close stops admitting new fetches and waits for those already in
+// flight: it returns nil once they finish, or ctx's error if ctx
+// expires first, leaving those fetches running in the background.
+//
+// A shared fetch that held a [Coordination] lease stops its heartbeat
+// and releases the lease separately. That cleanup can still be running
+// when Close returns. Close waits for the fetch, not for the cleanup.
+//
+// Close is idempotent and safe for concurrent use.
+func (hg *Herdgate) Close(ctx context.Context) error {
+	hg.closedMu.Lock()
+	if !hg.closed {
+		hg.closed = true
+		if hg.inFlight == 0 {
+			close(hg.flightsDone)
+		}
+	}
+	noFlights := hg.inFlight == 0
+	hg.closedMu.Unlock()
+
+	if noFlights {
+		return nil
+	}
+
+	select {
+	case <-hg.flightsDone:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // guardedStoreGet attempts to read the stored value for the key, turning a
@@ -173,6 +225,31 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 		_logger.Debug(ctx, "Cache miss", slog.String("key", key))
 	}
 	return value, found
+}
+
+// admitFlight admits a new flight unless [Herdgate.Close] has been
+// called.
+//
+// The returned done must be called exactly once when the flight
+// completes. done is a no-op when admitted is false.
+func (hg *Herdgate) admitFlight() (done func(), admitted bool) {
+	hg.closedMu.Lock()
+	defer hg.closedMu.Unlock()
+
+	if hg.closed {
+		return func() {}, false
+	}
+	hg.inFlight++
+
+	return func() {
+		hg.closedMu.Lock()
+		defer hg.closedMu.Unlock()
+
+		hg.inFlight--
+		if hg.closed && hg.inFlight == 0 {
+			close(hg.flightsDone)
+		}
+	}, true
 }
 
 // coordinatedFill attempts to fill the specified key's cache entry: it

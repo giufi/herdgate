@@ -39,9 +39,9 @@ type releaseResult struct {
 type fakeCoordination struct {
 	acquireCalls []acquireCall
 
-	acquireResults []acquireResult // one entry per Acquire call, subsequent calls repeat the last one. If empty, Acquire reports the lease as contended.
-	renewResults   []renewResult   // one entry per Renew call, subsequent calls repeat the last one. If empty, Renew reports the lease as lost.
-	releaseResults []releaseResult // one entry per Release call, subsequent calls repeat the last one. If empty, Release succeeds.
+	acquireResults []acquireResult // one entry per Acquire call, subsequent calls repeat the last one. If empty, Acquire reports the lease as contended
+	renewResults   []renewResult   // one entry per Renew call, subsequent calls repeat the last one. If empty, Renew reports the lease as lost
+	releaseResults []releaseResult // one entry per Release call, subsequent calls repeat the last one. If empty, Release succeeds
 
 	acquirePanic any
 	renewPanic   any
