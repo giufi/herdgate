@@ -9,8 +9,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/alicebob/miniredis/v2"
+	"github.com/giufi/herdgate/coordination/rediscoord"
 	"github.com/giufi/herdgate/store/inmemorystore"
 	"github.com/prometheus/client_golang/prometheus/testutil"
+	"github.com/redis/go-redis/v9"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/goleak"
@@ -535,6 +538,62 @@ func TestHerdgate_DoCoordinationFollowerPollPanic(t *testing.T) {
 	assert.Equal(t, 1, fetchCalls)
 	assert.Len(t, coord.acquireCalls, 1)
 	assert.InDelta(t, 0, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultContended)), 0)
+}
+
+func TestHerdgate_DoCoordinationConcurrentCallsAcrossInstancesCoalesced(t *testing.T) {
+	redisServer := miniredis.RunT(t)
+	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr(), MaxRetries: -1})
+	t.Cleanup(func() { _ = redisClient.Close() })
+	coord := rediscoord.New(redisClient)
+
+	store := inmemorystore.New()
+	provider := NewProvider()
+	hg1 := provider.New(store, WithCoordination(coord))
+	hg2 := provider.New(store, WithCoordination(coord))
+
+	want := []byte(_wantValue)
+	var calls atomic.Int64
+	unblockLeaderFetch := make(chan struct{})
+
+	const callersPerInstance = 3
+	var wg sync.WaitGroup
+	wg.Add(2 * callersPerInstance)
+
+	startConcurrentDoCalls := func(hg *Herdgate, fetch func(context.Context) ([]byte, error)) {
+		for range callersPerInstance {
+			go func() {
+				defer wg.Done()
+				got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+				assert.NoError(t, err)
+				assert.Equal(t, want, got)
+			}()
+		}
+	}
+
+	startConcurrentDoCalls(hg1, func(context.Context) ([]byte, error) {
+		calls.Add(1)
+		<-unblockLeaderFetch
+		return want, nil
+	})
+
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(hg1.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultAcquired)) == 1
+	}, time.Second, time.Millisecond, "hg1 never acquired the lease")
+
+	startConcurrentDoCalls(hg2, func(context.Context) ([]byte, error) {
+		calls.Add(1)
+		return want, nil
+	})
+
+	require.Eventually(t, func() bool {
+		return testutil.ToFloat64(hg1.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultContended)) == 1
+	}, time.Second, time.Millisecond, "hg2 never observed the lease as contended")
+
+	close(unblockLeaderFetch)
+	wg.Wait()
+
+	assert.Equal(t, int64(1), calls.Load())
+	assert.InDelta(t, 1, testutil.ToFloat64(hg1.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultAcquired)), 0)
 }
 
 func TestHerdgate_DoDecodeNilCodec(t *testing.T) {
