@@ -1184,6 +1184,15 @@ func countConcurrentFetchesAcross(t *testing.T, instances []*Herdgate) int {
 	leaderStarted := make(chan struct{})
 	var closeOnce sync.Once
 
+	leader, followers := instances[0], instances[1:]
+	wantCoalesced := 0
+	for _, hg := range followers {
+		if hg == leader {
+			wantCoalesced++
+		}
+	}
+	baseLeaderCacheMisses := testutil.ToFloat64(leader.metrics.cacheLookups.WithLabelValues(_resultLookupMiss))
+
 	var done sync.WaitGroup
 	done.Add(len(instances))
 	errs := make(chan error, len(instances))
@@ -1192,17 +1201,23 @@ func countConcurrentFetchesAcross(t *testing.T, instances []*Herdgate) int {
 		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
 			calls.Add(1)
 			closeOnce.Do(func() { close(leaderStarted) })
-			time.Sleep(50 * time.Millisecond) // margin for all the Do calls to happen
+			if wantCoalesced > 0 {
+				// Cache misses signal that the leader and coalesced callers are about to join the flight
+				assert.Eventually(t, func() bool {
+					return testutil.ToFloat64(leader.metrics.cacheLookups.WithLabelValues(_resultLookupMiss))-baseLeaderCacheMisses == float64(1+wantCoalesced)
+				}, time.Second, time.Millisecond, "the leader and the coalesced callers did not record their expected cache misses")
+				time.Sleep(10 * time.Millisecond) // small buffer between the cache miss and the actual call
+			}
 			return want, nil
 		})
 		errs <- err
 		assert.Equal(t, want, got)
 	}
 
-	go callDo(instances[0])
+	go callDo(leader)
 	<-leaderStarted
 
-	for _, hg := range instances[1:] {
+	for _, hg := range followers {
 		go callDo(hg)
 	}
 
