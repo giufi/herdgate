@@ -53,7 +53,7 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store := &fakeStore{}
 			metrics := newMetrics()
-			hg := &Herdgate{store: store, metrics: metrics}
+			hg := newHerdgate(store, metrics)
 
 			calls := 0
 			fetch := func(ctx context.Context) ([]byte, error) {
@@ -78,7 +78,7 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 	want := []byte("cached")
 	store := &fakeStore{getValue: want, getFound: true}
 	metrics := newMetrics()
-	hg := &Herdgate{store: store, metrics: metrics}
+	hg := newHerdgate(store, metrics)
 
 	calls := 0
 	fetch := func(ctx context.Context) ([]byte, error) {
@@ -101,7 +101,7 @@ func TestHerdgate_DoStoreGetPanic(t *testing.T) {
 	want := []byte(_wantValue)
 	store := &fakeStore{getPanic: assert.AnError}
 	metrics := newMetrics()
-	hg := &Herdgate{store: store, metrics: metrics}
+	hg := newHerdgate(store, metrics)
 
 	fetch := func(ctx context.Context) ([]byte, error) {
 		return want, nil
@@ -118,7 +118,7 @@ func TestHerdgate_DoStoreGetPanic(t *testing.T) {
 func TestHerdgate_DoFetchError(t *testing.T) {
 	store := &fakeStore{}
 	metrics := newMetrics()
-	hg := &Herdgate{store: store, metrics: metrics}
+	hg := newHerdgate(store, metrics)
 
 	wantErr := assert.AnError
 	fetch := func(ctx context.Context) ([]byte, error) {
@@ -153,7 +153,7 @@ func TestHerdgate_DoFetchPanic(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store := &fakeStore{}
 			metrics := newMetrics()
-			hg := &Herdgate{store: store, metrics: metrics}
+			hg := newHerdgate(store, metrics)
 
 			fetch := func(ctx context.Context) ([]byte, error) {
 				panic(tc.panicVal)
@@ -175,7 +175,7 @@ func TestHerdgate_DoStoreSetPanic(t *testing.T) {
 	want := []byte(_wantValue)
 	store := &fakeStore{setPanic: assert.AnError}
 	metrics := newMetrics()
-	hg := &Herdgate{store: store, metrics: metrics}
+	hg := newHerdgate(store, metrics)
 
 	fetch := func(ctx context.Context) ([]byte, error) {
 		return want, nil
@@ -193,7 +193,7 @@ func TestHerdgate_DoContextCanceled(t *testing.T) {
 	ttl := time.Minute
 	store := &fakeStore{setNotify: make(chan setCall, 1)}
 	metrics := newMetrics()
-	hg := &Herdgate{store: store, metrics: metrics}
+	hg := newHerdgate(store, metrics)
 
 	unblockFetch := make(chan struct{})
 	fetch := func(ctx context.Context) ([]byte, error) {
@@ -220,7 +220,7 @@ func TestHerdgate_DoContextCanceled(t *testing.T) {
 
 func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
 	store := inmemorystore.New()
-	hg := NewProvider().New(store)
+	hg := newTestHerdgate(store)
 
 	want := []byte(_wantValue)
 	calls := 0
@@ -245,7 +245,7 @@ func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
 
 func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 	store := inmemorystore.New()
-	hg := NewProvider().New(store)
+	hg := newTestHerdgate(store)
 
 	fetchErr := func(context.Context) ([]byte, error) {
 		return nil, assert.AnError
@@ -278,7 +278,7 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 
 func TestHerdgate_DoConcurrentCallsCoalesced(t *testing.T) {
 	store := inmemorystore.New()
-	hg := NewProvider().New(store)
+	hg := newTestHerdgate(store)
 
 	const callers = 50
 	fetchCalls := countConcurrentFetches(t, hg, callers)
@@ -303,7 +303,7 @@ func TestHerdgate_DoCoordinationLeader(t *testing.T) {
 		acquireResults: []acquireResult{{token: _token, acquired: true}},
 		releaseNotify:  make(chan releaseCall, 1),
 	}
-	hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(store, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchCalls := 0
@@ -333,7 +333,7 @@ func TestHerdgate_DoCoordinationHeartbeat(t *testing.T) {
 		renewResults:   []renewResult{{renewed: true}},
 		renewNotify:    make(chan renewCall, 10),
 	}
-	hg := &Herdgate{store: &fakeStore{}, coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(&fakeStore{}, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	unblockFetch := make(chan struct{})
@@ -369,7 +369,7 @@ func TestHerdgate_DoCoordinationAcquireError(t *testing.T) {
 	for name, coord := range testCases {
 		t.Run(name, func(t *testing.T) {
 			store := &fakeStore{}
-			hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+			hg := newTestHerdgate(store, WithCoordination(coord))
 
 			want := []byte(_wantValue)
 			fetchCalls := 0
@@ -394,7 +394,7 @@ func TestHerdgate_DoCoordinationReleaseError(t *testing.T) {
 		releaseResults: []releaseResult{{err: assert.AnError}},
 		releaseNotify:  make(chan releaseCall, 1),
 	}
-	hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(store, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchCalls := 0
@@ -419,7 +419,7 @@ func TestHerdgate_DoCoordinationReleaseError(t *testing.T) {
 func TestHerdgate_DoCoordinationFollower(t *testing.T) {
 	store := inmemorystore.New()
 	coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
-	hg := NewProvider().New(store, WithCoordination(coord))
+	hg := newTestHerdgate(store, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchCalls := 0
@@ -445,7 +445,7 @@ func TestHerdgate_DoCoordinationFollower(t *testing.T) {
 func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
 	store := inmemorystore.New()
 	coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
-	hg := NewProvider().New(store, WithCoordination(coord))
+	hg := newTestHerdgate(store, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchCalls := 0
@@ -474,7 +474,7 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquired(t *testing.T) {
 		renewResults:   []renewResult{{renewed: true}},
 		releaseNotify:  make(chan releaseCall, 1),
 	}
-	hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(store, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchCalls := 0
@@ -503,7 +503,7 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquireError(t *testing.T) {
 	coord := &fakeCoordination{
 		acquireResults: []acquireResult{{acquired: false}, {err: assert.AnError}},
 	}
-	hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(store, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchCalls := 0
@@ -523,7 +523,7 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquireError(t *testing.T) {
 func TestHerdgate_DoCoordinationFollowerPollPanic(t *testing.T) {
 	store := &fakeStore{getPanic: assert.AnError}
 	coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
-	hg := &Herdgate{store: store, coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(store, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchCalls := 0
@@ -602,7 +602,7 @@ func TestHerdgate_DoCoordinationConcurrentCallsAcrossInstancesCoalesced(t *testi
 
 func TestHerdgate_DoDecodeNilCodec(t *testing.T) {
 	store := &fakeStore{}
-	hg := &Herdgate{store: store, metrics: newMetrics()}
+	hg := newTestHerdgate(store)
 
 	calls := 0
 	fetch := func(ctx context.Context) (jsonPayload, error) {
@@ -619,7 +619,7 @@ func TestHerdgate_DoDecodeNilCodec(t *testing.T) {
 
 func TestHerdgate_DoDecodeFetchError(t *testing.T) {
 	store := &fakeStore{}
-	hg := &Herdgate{store: store, metrics: newMetrics()}
+	hg := newTestHerdgate(store)
 	codec := &fakeCodec{}
 
 	wantErr := assert.AnError
@@ -637,7 +637,7 @@ func TestHerdgate_DoDecodeFetchError(t *testing.T) {
 func TestHerdgate_DoDecodeMarshalError(t *testing.T) {
 	codecErr := errors.New(_errorMsg)
 	store := &fakeStore{}
-	hg := &Herdgate{store: store, metrics: newMetrics()}
+	hg := newTestHerdgate(store)
 	codec := &fakeCodec{marshalErr: codecErr}
 
 	fetch := func(ctx context.Context) (jsonPayload, error) {
@@ -653,7 +653,7 @@ func TestHerdgate_DoDecodeMarshalError(t *testing.T) {
 
 func TestHerdgate_DoDecodeMarshalPanic(t *testing.T) {
 	store := &fakeStore{}
-	hg := &Herdgate{store: store, metrics: newMetrics()}
+	hg := newTestHerdgate(store)
 	codec := &fakeCodec{marshalPanic: _panicValue}
 
 	fetch := func(ctx context.Context) (jsonPayload, error) {
@@ -670,7 +670,7 @@ func TestHerdgate_DoDecodeMarshalPanic(t *testing.T) {
 func TestHerdgate_DoDecodeUnmarshalError(t *testing.T) {
 	codecErr := errors.New(_errorMsg)
 	store := &fakeStore{getValue: []byte(`{"name":"foo"}`), getFound: true}
-	hg := &Herdgate{store: store, metrics: newMetrics()}
+	hg := newTestHerdgate(store)
 	codec := &fakeCodec{unmarshalErr: codecErr}
 
 	fetch := func(ctx context.Context) (jsonPayload, error) {
@@ -685,7 +685,7 @@ func TestHerdgate_DoDecodeUnmarshalError(t *testing.T) {
 
 func TestHerdgate_DoDecodeUnmarshalPanic(t *testing.T) {
 	store := &fakeStore{getValue: []byte(`{"name":"foo"}`), getFound: true}
-	hg := &Herdgate{store: store, metrics: newMetrics()}
+	hg := newTestHerdgate(store)
 	codec := &fakeCodec{unmarshalPanic: _panicValue}
 
 	fetch := func(ctx context.Context) (jsonPayload, error) {
@@ -701,7 +701,7 @@ func TestHerdgate_DoDecodeUnmarshalPanic(t *testing.T) {
 func TestHerdgate_DoDecodeSequentialCallsCacheHit(t *testing.T) {
 	want := jsonPayload{Name: _jsonPayloadName}
 	codec := &fakeCodec{}
-	hg := NewProvider().New(inmemorystore.New())
+	hg := newTestHerdgate(inmemorystore.New())
 
 	calls := 0
 	fetch := func(ctx context.Context) (jsonPayload, error) {
@@ -735,7 +735,7 @@ func TestHerdgate_DoAfterClose(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			hg := NewProvider().New(tc.store)
+			hg := newTestHerdgate(tc.store)
 			require.NoError(t, hg.Close(t.Context()))
 
 			fetchCalls := 0
@@ -758,7 +758,7 @@ func TestHerdgate_DoAfterClose(t *testing.T) {
 }
 
 func TestHerdgate_CloseInFlightFetch(t *testing.T) {
-	hg := NewProvider().New(&fakeStore{})
+	hg := newTestHerdgate(&fakeStore{})
 
 	want := []byte(_wantValue)
 	fetchStarted := make(chan struct{})
@@ -797,7 +797,7 @@ func TestHerdgate_CloseInFlightFetch(t *testing.T) {
 }
 
 func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
-	hg := NewProvider().New(inmemorystore.New())
+	hg := newTestHerdgate(inmemorystore.New())
 
 	key1, key2 := _key+"1", _key+"2" // the same key would coalesce into one flight
 	want1, want2 := []byte(_wantValue+"1"), []byte(_wantValue+"2")
@@ -853,7 +853,7 @@ func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
 
 func TestHerdgate_CloseContextCanceled(t *testing.T) {
 	store := &fakeStore{setNotify: make(chan setCall, 1)}
-	hg := NewProvider().New(store)
+	hg := newTestHerdgate(store)
 
 	want := []byte(_wantValue)
 	fetchStarted := make(chan struct{})
@@ -885,7 +885,7 @@ func TestHerdgate_CloseContextCanceled(t *testing.T) {
 }
 
 func TestHerdgate_CloseExpiredContextWithoutFlights(t *testing.T) {
-	hg := NewProvider().New(&fakeStore{})
+	hg := newTestHerdgate(&fakeStore{})
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
@@ -896,14 +896,14 @@ func TestHerdgate_CloseExpiredContextWithoutFlights(t *testing.T) {
 }
 
 func TestHerdgate_CloseIdempotent(t *testing.T) {
-	hg := NewProvider().New(&fakeStore{})
+	hg := newTestHerdgate(&fakeStore{})
 
 	require.NoError(t, hg.Close(t.Context()))
 	require.NoError(t, hg.Close(t.Context()))
 }
 
 func TestHerdgate_CloseConcurrencySafe(t *testing.T) {
-	hg := NewProvider().New(&fakeStore{})
+	hg := newTestHerdgate(&fakeStore{})
 
 	const callers = 10
 	var wg sync.WaitGroup
@@ -928,7 +928,7 @@ func TestHerdgate_CloseCoordinationLeaseHeld(t *testing.T) {
 		renewNotify:    make(chan renewCall, 10),
 		releaseNotify:  make(chan releaseCall, 1),
 	}
-	hg := NewProvider().New(&fakeStore{}, WithCoordination(coord))
+	hg := newTestHerdgate(&fakeStore{}, WithCoordination(coord))
 
 	want := []byte(_wantValue)
 	fetchStarted := make(chan struct{})
@@ -977,7 +977,7 @@ func TestHerdgate_CloseCoordinationLeaseHeld(t *testing.T) {
 }
 
 func TestHerdgate_AdmitFlightAfterClose(t *testing.T) {
-	hg := NewProvider().New(&fakeStore{})
+	hg := newTestHerdgate(&fakeStore{})
 	require.NoError(t, hg.Close(t.Context()))
 
 	done, admitted := hg.admitFlight()
@@ -987,7 +987,7 @@ func TestHerdgate_AdmitFlightAfterClose(t *testing.T) {
 
 func TestHerdgate_StartHeartbeatPeriodicRenewal(t *testing.T) {
 	coord := &fakeCoordination{renewResults: []renewResult{{renewed: true}}, renewNotify: make(chan renewCall, 10)}
-	hg := &Herdgate{coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(nil, WithCoordination(coord))
 
 	stop := hg.startHeartbeat(t.Context(), _key, _token)
 	defer stop()
@@ -1004,7 +1004,7 @@ func TestHerdgate_StartHeartbeatPeriodicRenewal(t *testing.T) {
 
 func TestHerdgate_StartHeartbeatStop(t *testing.T) {
 	coord := &fakeCoordination{renewResults: []renewResult{{renewed: true}}}
-	hg := &Herdgate{coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(nil, WithCoordination(coord))
 
 	stop := hg.startHeartbeat(t.Context(), _key, _token)
 
@@ -1026,7 +1026,7 @@ func TestHerdgate_StartHeartbeatStopDuringRenew(t *testing.T) {
 		renewNotify:  make(chan renewCall, 10),
 		renewHold:    make(chan struct{}),
 	}
-	hg := &Herdgate{coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(nil, WithCoordination(coord))
 
 	stop := hg.startHeartbeat(t.Context(), _key, _token)
 
@@ -1053,7 +1053,7 @@ func TestHerdgate_StartHeartbeatStopDuringRenew(t *testing.T) {
 
 func TestHerdgate_StartHeartbeatLeaseLost(t *testing.T) {
 	coord := &fakeCoordination{renewResults: []renewResult{{renewed: false}}, renewNotify: make(chan renewCall, 10)}
-	hg := &Herdgate{coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(nil, WithCoordination(coord))
 
 	stop := hg.startHeartbeat(t.Context(), _key, _token)
 	defer stop()
@@ -1074,7 +1074,7 @@ func TestHerdgate_StartHeartbeatLeaseLost(t *testing.T) {
 
 func TestHerdgate_StartHeartbeatLeasePresumedLost(t *testing.T) {
 	coord := &fakeCoordination{renewResults: []renewResult{{err: assert.AnError}}, renewNotify: make(chan renewCall, 10)}
-	hg := &Herdgate{coordination: coord, metrics: newMetrics()}
+	hg := newTestHerdgate(nil, WithCoordination(coord))
 
 	stop := hg.startHeartbeat(t.Context(), _key, _token)
 	defer stop()
@@ -1105,7 +1105,7 @@ func TestHerdgate_GuardedRenewMetrics(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			hg := &Herdgate{coordination: tc.coord, metrics: newMetrics()}
+			hg := newTestHerdgate(nil, WithCoordination(tc.coord))
 
 			_, _ = hg.guardedRenew(t.Context(), _key, _token)
 			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationRenew, tc.wantResult)), 0)
@@ -1125,7 +1125,7 @@ func TestHerdgate_GuardedReleaseMetrics(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			hg := &Herdgate{coordination: tc.coord, metrics: newMetrics()}
+			hg := newTestHerdgate(nil, WithCoordination(tc.coord))
 
 			hg.guardedRelease(t.Context(), _key, _token)
 			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationRelease, tc.wantResult)), 0)
@@ -1145,7 +1145,7 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			store := &fakeStore{getFound: false}
-			hg := &Herdgate{store: store, metrics: newMetrics()}
+			hg := newTestHerdgate(store)
 
 			ctx := t.Context()
 			if tc.parentTimeout > 0 {
@@ -1164,12 +1164,20 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 
 func TestHerdgate_AwaitLeaderValueStorePanic(t *testing.T) {
 	store := &fakeStore{getPanic: assert.AnError}
-	hg := &Herdgate{store: store, metrics: newMetrics()}
+	hg := newTestHerdgate(store)
 
 	value, found, err := hg.awaitLeaderValue(t.Context(), _key, 250*time.Millisecond)
 	require.Error(t, err)
 	assert.False(t, found)
 	assert.Nil(t, value)
+}
+
+func newTestHerdgate(store Store, opts ...HerdgateOption) *Herdgate {
+	hg := newHerdgate(store, newMetrics())
+	for _, opt := range opts {
+		opt(hg)
+	}
+	return hg
 }
 
 func countConcurrentFetches(t *testing.T, hg *Herdgate, callers int) int {
