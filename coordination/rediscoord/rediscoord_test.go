@@ -277,6 +277,22 @@ func TestCoordination_RenewMatchingToken(t *testing.T) {
 	assert.Equal(t, token, stored)
 }
 
+func TestCoordination_RenewSubMillisecondTTL(t *testing.T) {
+	server, client := setupRedis(t)
+	coord := New(client)
+
+	const ttl = time.Second
+	token, acquired, err := coord.Acquire(t.Context(), _key, ttl)
+	require.NoError(t, err)
+	require.True(t, acquired)
+
+	renewed, err := coord.Renew(t.Context(), _key, token, 500*time.Microsecond)
+	require.NoError(t, err)
+	assert.True(t, renewed)
+	assert.True(t, server.Exists(lockKey(_key)))
+	assert.Equal(t, time.Millisecond, server.TTL(lockKey(_key)))
+}
+
 func TestCoordination_ReleaseMismatchedToken(t *testing.T) {
 	server, client := setupRedis(t)
 	coord := New(client)

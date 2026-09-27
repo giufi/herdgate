@@ -58,8 +58,8 @@ func New(client redis.UniversalClient) *Coordination {
 //
 // Keys are stored under a "herdgate:lock:" prefix to avoid collisions.
 func (c *Coordination) Acquire(ctx context.Context, key string, ttl time.Duration) (token string, acquired bool, err error) {
-	if ttl <= 0 {
-		return "", false, fmt.Errorf("rediscoord: ttl must be greater than zero, got %s", ttl)
+	if err := checkTTL(ttl); err != nil {
+		return "", false, err
 	}
 
 	token, err = c.generateToken()
@@ -84,12 +84,16 @@ func (c *Coordination) Acquire(ctx context.Context, key string, ttl time.Duratio
 // The comparison and renewal happen atomically via a Lua script.
 //
 // If the provided ttl is not greater than zero, it returns an error.
+//
+// A positive ttl under one millisecond is rounded up to one millisecond.
 func (c *Coordination) Renew(ctx context.Context, key, token string, ttl time.Duration) (renewed bool, err error) {
-	if ttl <= 0 {
-		return false, fmt.Errorf("rediscoord: ttl must be greater than zero, got %s", ttl)
+	if err := checkTTL(ttl); err != nil {
+		return false, err
 	}
 
-	result, err := _renewScript.Run(ctx, c.client, []string{lockKey(key)}, token, ttl.Milliseconds()).Int()
+	ttlMs := max(ttl.Milliseconds(), 1) // a non-positive PEXPIRE deletes the key instead of failing
+
+	result, err := _renewScript.Run(ctx, c.client, []string{lockKey(key)}, token, ttlMs).Int()
 	if err != nil {
 		return false, fmt.Errorf("rediscoord: %w", err)
 	}
@@ -104,6 +108,13 @@ func (c *Coordination) Renew(ctx context.Context, key, token string, ttl time.Du
 func (c *Coordination) Release(ctx context.Context, key, token string) error {
 	if err := _releaseScript.Run(ctx, c.client, []string{lockKey(key)}, token).Err(); err != nil {
 		return fmt.Errorf("rediscoord: %w", err)
+	}
+	return nil
+}
+
+func checkTTL(ttl time.Duration) error {
+	if ttl <= 0 {
+		return fmt.Errorf("rediscoord: ttl must be greater than zero, got %s", ttl)
 	}
 	return nil
 }
