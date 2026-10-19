@@ -780,8 +780,8 @@ func TestHerdgate_CloseInFlightFetch(t *testing.T) {
 	go func() { closeDone <- hg.Close(t.Context()) }()
 
 	select {
-	case <-closeDone:
-		t.Fatal("Close returned before the in-flight fetch finished")
+	case err := <-closeDone:
+		t.Fatalf("Close returned before the in-flight fetch finished: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
@@ -831,8 +831,8 @@ func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
 	<-doDone1
 
 	select {
-	case <-closeDone:
-		t.Fatal("Close returned after only the first of two fetches finished")
+	case err := <-closeDone:
+		t.Fatalf("Close returned after only the first of two fetches finished: %v", err)
 	case <-time.After(50 * time.Millisecond):
 	}
 
