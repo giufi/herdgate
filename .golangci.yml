@@ -29,10 +29,10 @@ linters:
       attr-only: true
       context: scope
       custom-funcs:
-        - name: "github.com/giufi/herdgate/internal/logging.Error"
+        - name: "(github.com/giufi/herdgate/internal/logging.Logger).Error"
           msg-pos: 1
           args-pos: 2
-        - name: "github.com/giufi/herdgate/internal/logging.Debug"
+        - name: "(github.com/giufi/herdgate/internal/logging.Logger).Debug"
           msg-pos: 1
           args-pos: 2
       forbidden-keys:

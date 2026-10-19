@@ -43,7 +43,7 @@ func New() *Store {
 //
 // An elapsed TTL is treated the same as a missing key.
 func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
-	entry, ok := s.entries.Load(key)
+	entry, ok := s.entries.Load(ctx, key)
 	if !ok {
 		return nil, false
 	}

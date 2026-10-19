@@ -45,6 +45,15 @@ func TestStore_GetMiss(t *testing.T) {
 	assert.Nil(t, got)
 }
 
+func TestStore_GetTypeMismatch(t *testing.T) {
+	s := New()
+	s.entries.m.Store(_key, "not a storeEntry")
+
+	got, ok := s.Get(t.Context(), _key)
+	assert.False(t, ok)
+	assert.Nil(t, got)
+}
+
 func TestStore_GetHit(t *testing.T) {
 	testCases := map[string][]byte{
 		"key1": []byte("foo"),
@@ -97,7 +106,7 @@ func TestStore_GetTTL(t *testing.T) {
 				return
 			}
 			assert.Nil(t, got)
-			_, stillStored := s.entries.Load(_key)
+			_, stillStored := s.entries.Load(t.Context(), _key)
 			assert.True(t, stillStored)
 		})
 	}
@@ -140,7 +149,7 @@ func TestStore_SetTTL(t *testing.T) {
 			s.now = func() time.Time { return setAt }
 
 			s.Set(t.Context(), _key, want, tc.ttl)
-			entry, ok := s.entries.Load(_key)
+			entry, ok := s.entries.Load(t.Context(), _key)
 			require.True(t, ok)
 			assert.Equal(t, tc.wantExpiresAt, entry.expiresAt)
 		})
@@ -155,12 +164,12 @@ func TestStore_SetTTLOverwrite(t *testing.T) {
 	s.now = func() time.Time { return setAt }
 
 	s.Set(t.Context(), _key, want, time.Minute)
-	entry, ok := s.entries.Load(_key)
+	entry, ok := s.entries.Load(t.Context(), _key)
 	require.True(t, ok)
 	assert.Equal(t, setAt.Add(time.Minute), entry.expiresAt)
 
 	s.Set(t.Context(), _key, want, _noTTL)
-	entry, ok = s.entries.Load(_key)
+	entry, ok = s.entries.Load(t.Context(), _key)
 	require.True(t, ok)
 	assert.True(t, entry.expiresAt.IsZero())
 }
