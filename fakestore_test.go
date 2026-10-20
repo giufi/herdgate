@@ -1,6 +1,7 @@
 package herdgate
 
 import (
+	"bytes"
 	"context"
 	"time"
 )
@@ -31,11 +32,11 @@ func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool) {
 	if f.getPanic != nil {
 		panic(f.getPanic)
 	}
-	return f.getValue, f.getFound
+	return bytes.Clone(f.getValue), f.getFound
 }
 
 func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
-	call := setCall{key: key, value: value, ttl: ttl}
+	call := setCall{key: key, value: bytes.Clone(value), ttl: ttl}
 	f.setCalls = append(f.setCalls, call)
 	if f.setPanic != nil {
 		panic(f.setPanic)

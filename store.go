@@ -11,10 +11,14 @@ import (
 type Store interface {
 	// Get returns the value stored for the given key, and reports whether it was found.
 	//
+	// Modifying the returned value must not affect the Store or any value returned by another call.
+	//
 	// An elapsed TTL is treated the same as a missing key.
 	Get(ctx context.Context, key string) ([]byte, bool)
 
 	// Set stores the value for the given key, replacing any existing value.
+	//
+	// It must not modify the value, or retain it after returning.
 	//
 	// A TTL of 0 or less means the key never expires.
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration)

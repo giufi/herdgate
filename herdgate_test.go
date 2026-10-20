@@ -297,6 +297,50 @@ func TestHerdgate_DoConcurrentCallsAcrossInstancesNotCoalesced(t *testing.T) {
 	assert.InDelta(t, 0, testutil.ToFloat64(hg1.metrics.coalescedWaiters), 0)
 }
 
+func TestHerdgate_DoConcurrentCallsIsolatedResults(t *testing.T) {
+	hg := newTestHerdgate(inmemorystore.New())
+
+	leaderStarted := make(chan struct{})
+	var closeOnce sync.Once
+	var calls atomic.Int64
+
+	callDo := func() ([]byte, error) {
+		return hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+			calls.Add(1)
+			closeOnce.Do(func() { close(leaderStarted) })
+			// Cache misses signal that the leader and the follower are about to join the flight
+			assert.Eventually(t, func() bool {
+				return testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_resultLookupMiss)) == 2
+			}, time.Second, time.Millisecond, "the leader and the follower did not record their expected cache misses")
+			time.Sleep(10 * time.Millisecond) // small buffer between the cache miss and the actual call
+			return []byte(_wantValue), nil
+		})
+	}
+
+	var leaderGot, followerGot []byte
+	var leaderErr, followerErr error
+
+	var wg sync.WaitGroup
+	wg.Go(func() { leaderGot, leaderErr = callDo() })
+	<-leaderStarted
+
+	wg.Go(func() { followerGot, followerErr = callDo() })
+
+	wg.Wait()
+
+	require.NoError(t, leaderErr)
+	require.NoError(t, followerErr)
+	require.EqualValues(t, 1, calls.Load())
+	require.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coalescedWaiters), 0)
+
+	want := []byte(_wantValue)
+	require.Equal(t, want, leaderGot)
+	require.Equal(t, want, followerGot)
+
+	leaderGot[0] = 'X'
+	assert.Equal(t, want, followerGot, "mutating the leader's result changed the follower's result")
+}
+
 func TestHerdgate_DoCoordinationLeader(t *testing.T) {
 	store := &fakeStore{}
 	coord := &fakeCoordination{

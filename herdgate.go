@@ -1,6 +1,7 @@
 package herdgate
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -75,6 +76,9 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 // Do returns the cached value for the key, if present. On a cache miss,
 // the value comes from fetch and is cached according to opts.
 //
+// Modifying the returned value does not affect the cache or any value returned
+// by another Do call.
+//
 // Caching is best-effort: a failed read is treated as a miss, and a value
 // fetched successfully is still returned even if it could not be cached.
 //
@@ -129,7 +133,7 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 		if !ok {
 			return nil, fmt.Errorf("shared result was %T, but []byte was expected", res.Val)
 		}
-		return val, nil
+		return bytes.Clone(val), nil
 	case <-ctx.Done():
 		_logger.Debug(ctx, "Context done", slog.String("key", key), slog.Any("error", ctx.Err()))
 		return nil, ctx.Err()
