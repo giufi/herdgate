@@ -35,7 +35,7 @@ type storeEntry struct {
 // New creates a new [Store].
 func New() *Store {
 	return &Store{
-		now: func() time.Time { return time.Now().UTC() },
+		now: time.Now,
 	}
 }
 

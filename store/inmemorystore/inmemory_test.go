@@ -30,10 +30,6 @@ func TestStore_NewIsolated(t *testing.T) {
 	assert.Nil(t, got)
 }
 
-func TestStore_NewUTC(t *testing.T) {
-	assert.Equal(t, time.UTC, New().now().Location())
-}
-
 func TestStore_GetMiss(t *testing.T) {
 	otherKey := "otherKey"
 
