@@ -12,6 +12,10 @@ import (
 )
 
 const (
+	_testResultLookupHit   = "hit"
+	_testResultLookupMiss  = "miss"
+	_testResultLookupError = "error"
+
 	_testResultSuccess = "success"
 	_testResultError   = "error"
 
@@ -31,27 +35,27 @@ func TestMetrics_IncrementCacheHit(t *testing.T) {
 	m := newMetrics()
 
 	m.incrementCacheHit()
-	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues("hit")), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues("miss")), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues("error")), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
 }
 
 func TestMetrics_IncrementCacheMiss(t *testing.T) {
 	m := newMetrics()
 
 	m.incrementCacheMiss()
-	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues("miss")), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues("hit")), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues("error")), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
 }
 
 func TestMetrics_IncrementCacheLookupError(t *testing.T) {
 	m := newMetrics()
 
 	m.incrementCacheLookupError()
-	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues("error")), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues("hit")), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues("miss")), 0)
+	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
+	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
 }
 
 func TestMetrics_RecordCacheWrite(t *testing.T) {
