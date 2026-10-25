@@ -186,21 +186,29 @@ func TestHerdgate_DoFetchNilValue(t *testing.T) {
 	assert.Equal(t, []setArgs{{key: _key, value: []byte{}, ttl: time.Minute}}, store.setArgs())
 }
 
-func TestHerdgate_DoStoreSetPanic(t *testing.T) {
-	want := []byte(_wantValue)
-	store := &fakeStore{setPanic: assert.AnError}
-	metrics := newMetrics()
-	hg := newHerdgate(store, metrics)
-
-	fetch := func(ctx context.Context) ([]byte, error) {
-		return want, nil
+func TestHerdgate_DoStoreSetError(t *testing.T) {
+	testCases := map[string]*fakeStore{
+		_errorTestCase: {setErr: assert.AnError},
+		_panicTestCase: {setPanic: assert.AnError},
 	}
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues(_testResultError)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues(_testResultSuccess)), 0)
+	for name, store := range testCases {
+		t.Run(name, func(t *testing.T) {
+			want := []byte(_wantValue)
+			metrics := newMetrics()
+			hg := newHerdgate(store, metrics)
+
+			fetch := func(ctx context.Context) ([]byte, error) {
+				return want, nil
+			}
+
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues(_testResultError)), 0)
+			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues(_testResultSuccess)), 0)
+		})
+	}
 }
 
 func TestHerdgate_DoContextCanceled(t *testing.T) {
@@ -476,7 +484,7 @@ func TestHerdgate_DoCoordinationFollower(t *testing.T) {
 
 		go func() {
 			time.Sleep(2 * _followerPollInterval)
-			store.Set(t.Context(), _key, want, time.Minute)
+			assert.NoError(t, store.Set(t.Context(), _key, want, time.Minute))
 		}()
 
 		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
@@ -504,7 +512,7 @@ func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
 
 		go func() {
 			time.Sleep(_electionRetryInterval + 2*_followerPollInterval)
-			store.Set(t.Context(), _key, want, time.Minute)
+			assert.NoError(t, store.Set(t.Context(), _key, want, time.Minute))
 		}()
 
 		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)

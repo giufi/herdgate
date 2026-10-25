@@ -22,6 +22,8 @@ type fakeStore struct {
 	getValue []byte
 	getFound bool
 
+	setErr error
+
 	getPanic any
 	setPanic any
 
@@ -46,7 +48,7 @@ func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool) {
 	return bytes.Clone(f.getValue), f.getFound
 }
 
-func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
+func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	args := setArgs{key: key, value: bytes.Clone(value), ttl: ttl}
 
 	f.guarded.mu.Lock()
@@ -56,6 +58,7 @@ func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.
 	if f.setPanic != nil {
 		panic(f.setPanic)
 	}
+	return f.setErr
 }
 
 func (f *fakeStore) getArgs() []getArgs {

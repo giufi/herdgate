@@ -57,7 +57,9 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
 // A nil value is stored as a non-nil, empty []byte.
 //
 // A TTL of 0 or less means the key never expires.
-func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
+//
+// The returned error is always nil.
+func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
 	if value == nil {
 		value = []byte{}
 	}
@@ -66,4 +68,5 @@ func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Dura
 		expiresAt = time.Now().Add(ttl)
 	}
 	s.entries.Store(key, storeEntry{value: bytes.Clone(value), expiresAt: expiresAt})
+	return nil
 }

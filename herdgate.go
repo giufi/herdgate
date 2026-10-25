@@ -572,8 +572,8 @@ func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Con
 	return fetch(fetchCtx)
 }
 
-// guardedStoreSet caches the fetched value for the key, turning a panic
-// into an error.
+// guardedStoreSet attempts to cache the fetched value for the key with
+// [Store.Set], turning a panic into an error.
 //
 // Recovery happens here, not in coordinatedFill, so recordCacheWrite labels
 // the write as an error.
@@ -585,6 +585,5 @@ func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byt
 		hg.metrics.recordCacheWrite(err)
 	}()
 
-	hg.store.Set(ctx, key, value, ttl)
-	return nil
+	return hg.store.Set(ctx, key, value, ttl)
 }
