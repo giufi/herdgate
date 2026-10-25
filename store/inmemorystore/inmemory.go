@@ -14,8 +14,9 @@ import (
 
 // Store is an in-memory implementation of [herdgate.Store], backed by a [sync.Map].
 //
-// Expiration is checked lazily on Get. An expired entry is treated as a miss, but is only removed from the map when a later Set overwrites that key,
-// or never, if the key isn't requested again.
+// Expiration is checked lazily by [Store.Get], which treats an expired entry
+// as a miss without removing it. The entry stays in the map until
+// [Store.Set] overwrites that key.
 //
 // [herdgate.Store]: https://pkg.go.dev/github.com/giufi/herdgate#Store
 type Store struct {
