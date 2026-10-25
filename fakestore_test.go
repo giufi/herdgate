@@ -25,8 +25,6 @@ type fakeStore struct {
 	getPanic any
 	setPanic any
 
-	setNotify chan setArgs // if non-nil, Set sends its args here without blocking
-
 	guarded struct {
 		mu      sync.Mutex
 		getArgs []getArgs
@@ -44,6 +42,7 @@ func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool) {
 	if f.getPanic != nil {
 		panic(f.getPanic)
 	}
+
 	return bytes.Clone(f.getValue), f.getFound
 }
 
@@ -56,12 +55,6 @@ func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.
 
 	if f.setPanic != nil {
 		panic(f.setPanic)
-	}
-	if f.setNotify != nil {
-		select {
-		case f.setNotify <- args:
-		default:
-		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
@@ -189,33 +190,30 @@ func TestHerdgate_DoStoreSetPanic(t *testing.T) {
 }
 
 func TestHerdgate_DoContextCanceled(t *testing.T) {
-	want := []byte(_wantValue)
-	ttl := time.Minute
-	store := &fakeStore{setNotify: make(chan setArgs, 1)}
-	metrics := newMetrics()
-	hg := newHerdgate(store, metrics)
+	synctest.Test(t, func(t *testing.T) {
+		want := []byte(_wantValue)
+		ttl := time.Minute
+		store := &fakeStore{}
+		hg := newTestHerdgate(store)
 
-	unblockFetch := make(chan struct{})
-	fetch := func(ctx context.Context) ([]byte, error) {
-		<-unblockFetch
-		return want, nil
-	}
+		unblockFetch := make(chan struct{})
+		fetch := func(ctx context.Context) ([]byte, error) {
+			<-unblockFetch
+			return want, nil
+		}
 
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel() // canceled before Do runs, so Do returns immediately without waiting for fetch
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel() // canceled before Do runs, so Do returns immediately without waiting for fetch
 
-	got, err := hg.Do(ctx, _key, DoOptions{TTL: ttl}, fetch)
-	require.ErrorIs(t, err, context.Canceled)
-	assert.Nil(t, got)
+		got, err := hg.Do(ctx, _key, DoOptions{TTL: ttl}, fetch)
+		require.ErrorIs(t, err, context.Canceled)
+		assert.Nil(t, got)
 
-	close(unblockFetch)
+		close(unblockFetch)
+		synctest.Wait()
 
-	select {
-	case <-store.setNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Store.Set")
-	}
-	assert.Equal(t, []setArgs{{key: _key, value: want, ttl: ttl}}, store.setArgs())
+		assert.Equal(t, []setArgs{{key: _key, value: want, ttl: ttl}}, store.setArgs())
+	})
 }
 
 func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
@@ -277,131 +275,122 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 }
 
 func TestHerdgate_DoConcurrentCallsCoalesced(t *testing.T) {
-	store := inmemorystore.New()
-	hg := newTestHerdgate(store)
+	synctest.Test(t, func(t *testing.T) {
+		store := inmemorystore.New()
+		hg := newTestHerdgate(store)
 
-	const callers = 50
-	fetchCalls := countConcurrentFetches(t, hg, callers)
-	require.Equal(t, 1, fetchCalls)
-	assert.InDelta(t, callers-1, testutil.ToFloat64(hg.metrics.coalescedWaiters), 0)
+		const callers = 50
+		fetchCalls := countConcurrentFetches(t, hg, callers)
+		require.Equal(t, 1, fetchCalls)
+		assert.InDelta(t, callers-1, testutil.ToFloat64(hg.metrics.coalescedWaiters), 0)
+	})
 }
 
 func TestHerdgate_DoConcurrentCallsAcrossInstancesNotCoalesced(t *testing.T) {
-	provider := NewProvider()
-	hg1 := provider.New(inmemorystore.New())
-	hg2 := provider.New(inmemorystore.New())
-	instances := []*Herdgate{hg1, hg2}
+	synctest.Test(t, func(t *testing.T) {
+		provider := NewProvider()
+		hg1 := provider.New(inmemorystore.New())
+		hg2 := provider.New(inmemorystore.New())
+		instances := []*Herdgate{hg1, hg2}
 
-	fetchCalls := countConcurrentFetchesAcross(t, instances)
-	require.Equal(t, 2, fetchCalls)
-	assert.InDelta(t, 0, testutil.ToFloat64(hg1.metrics.coalescedWaiters), 0)
+		fetchCalls := countConcurrentFetchesAcross(t, instances)
+		require.Equal(t, len(instances), fetchCalls)
+		assert.InDelta(t, 0, testutil.ToFloat64(hg1.metrics.coalescedWaiters), 0)
+	})
 }
 
 func TestHerdgate_DoConcurrentCallsIsolatedResults(t *testing.T) {
-	hg := newTestHerdgate(inmemorystore.New())
+	synctest.Test(t, func(t *testing.T) {
+		hg := newTestHerdgate(inmemorystore.New())
 
-	leaderStarted := make(chan struct{})
-	var closeOnce sync.Once
-	var calls atomic.Int64
+		var calls atomic.Int64
+		unblockFetch := make(chan struct{})
+		callDo := func() ([]byte, error) {
+			return hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+				calls.Add(1)
+				<-unblockFetch
+				return []byte(_wantValue), nil
+			})
+		}
 
-	callDo := func() ([]byte, error) {
-		return hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-			calls.Add(1)
-			closeOnce.Do(func() { close(leaderStarted) })
-			// Cache misses signal that the leader and the follower are about to join the flight
-			assert.Eventually(t, func() bool {
-				return testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_resultLookupMiss)) == 2
-			}, time.Second, time.Millisecond, "the leader and the follower did not record their expected cache misses")
-			time.Sleep(10 * time.Millisecond) // small buffer between the cache miss and the actual call
-			return []byte(_wantValue), nil
-		})
-	}
+		var got1, got2 []byte
+		var err1, err2 error
+		var wg sync.WaitGroup
+		wg.Go(func() { got1, err1 = callDo() })
+		wg.Go(func() { got2, err2 = callDo() })
 
-	var leaderGot, followerGot []byte
-	var leaderErr, followerErr error
+		synctest.Wait()
+		close(unblockFetch)
+		wg.Wait()
 
-	var wg sync.WaitGroup
-	wg.Go(func() { leaderGot, leaderErr = callDo() })
-	<-leaderStarted
+		require.NoError(t, err1)
+		require.NoError(t, err2)
+		require.Equal(t, int64(1), calls.Load())
+		require.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coalescedWaiters), 0)
 
-	wg.Go(func() { followerGot, followerErr = callDo() })
+		want := []byte(_wantValue)
+		require.Equal(t, want, got1)
+		require.Equal(t, want, got2)
 
-	wg.Wait()
-
-	require.NoError(t, leaderErr)
-	require.NoError(t, followerErr)
-	require.Equal(t, int64(1), calls.Load())
-	require.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coalescedWaiters), 0)
-
-	want := []byte(_wantValue)
-	require.Equal(t, want, leaderGot)
-	require.Equal(t, want, followerGot)
-
-	leaderGot[0] = 'X'
-	assert.Equal(t, want, followerGot, "mutating the leader's result changed the follower's result")
+		got1[0] = 'X'
+		assert.Equal(t, want, got2, "mutating one caller's result changed the other's")
+	})
 }
 
 func TestHerdgate_DoCoordinationLeader(t *testing.T) {
-	store := &fakeStore{}
-	coord := &fakeCoordination{
-		acquireResults: []acquireResult{{token: _token, acquired: true}},
-		releaseNotify:  make(chan releaseArgs, 1),
-	}
-	hg := newTestHerdgate(store, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{}
+		coord := &fakeCoordination{acquireResults: []acquireResult{{token: _token, acquired: true}}}
+		hg := newTestHerdgate(store, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchCalls := 0
-	fetch := func(ctx context.Context) ([]byte, error) {
-		fetchCalls++
-		return want, nil
-	}
+		want := []byte(_wantValue)
+		fetchCalls := 0
+		fetch := func(ctx context.Context) ([]byte, error) {
+			fetchCalls++
+			return want, nil
+		}
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, fetchCalls)
-	assert.Equal(t, []acquireArgs{{key: _key, ttl: _defaultLeaseTTL}}, coord.acquireArgs())
-	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultAcquired)), 0)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		synctest.Wait()
 
-	select {
-	case <-coord.releaseNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Release")
-	}
-	assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+		assert.Equal(t, want, got)
+		assert.Equal(t, 1, fetchCalls)
+		assert.Equal(t, []acquireArgs{{key: _key, ttl: _defaultLeaseTTL}}, coord.acquireArgs())
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultAcquired)), 0)
+		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+	})
 }
 
 func TestHerdgate_DoCoordinationHeartbeat(t *testing.T) {
-	coord := &fakeCoordination{
-		acquireResults: []acquireResult{{token: _token, acquired: true}},
-		renewResults:   []renewResult{{renewed: true}},
-		renewNotify:    make(chan renewArgs, 10),
-	}
-	hg := newTestHerdgate(&fakeStore{}, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{
+			acquireResults: []acquireResult{{token: _token, acquired: true}},
+			renewResults:   []renewResult{{renewed: true}},
+		}
+		hg := newTestHerdgate(&fakeStore{}, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	unblockFetch := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-			<-unblockFetch
-			return want, nil
-		})
-		assert.NoError(t, err)
-		assert.Equal(t, want, got)
-	}()
+		want := []byte(_wantValue)
+		unblockFetch := make(chan struct{})
+		go func() {
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+				<-unblockFetch
+				return want, nil
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, want, got)
+		}()
 
-	select {
-	case got := <-coord.renewNotify:
-		assert.Equal(t, renewArgs{key: _key, token: _token, ttl: _defaultLeaseTTL}, got)
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Renew")
-	}
-	close(unblockFetch)
+		const ticks = 2
+		time.Sleep(ticks * _defaultHeartbeatInterval)
+		synctest.Wait()
+		close(unblockFetch)
+		synctest.Wait()
 
-	// Wait for the Do call to finish
-	<-done
+		wantRenewArgs := slices.Repeat([]renewArgs{{key: _key, token: _token, ttl: _defaultLeaseTTL}}, ticks)
+		assert.Equal(t, wantRenewArgs, coord.renewArgs())
+		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+	})
 }
 
 func TestHerdgate_DoCoordinationAcquireError(t *testing.T) {
@@ -432,156 +421,158 @@ func TestHerdgate_DoCoordinationAcquireError(t *testing.T) {
 }
 
 func TestHerdgate_DoCoordinationReleaseError(t *testing.T) {
-	store := &fakeStore{}
-	coord := &fakeCoordination{
-		acquireResults: []acquireResult{{token: _token, acquired: true}},
-		releaseResults: []releaseResult{{err: assert.AnError}},
-		releaseNotify:  make(chan releaseArgs, 1),
-	}
-	hg := newTestHerdgate(store, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{}
+		coord := &fakeCoordination{
+			acquireResults: []acquireResult{{token: _token, acquired: true}},
+			releaseResults: []releaseResult{{err: assert.AnError}},
+		}
+		hg := newTestHerdgate(store, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchCalls := 0
-	fetch := func(ctx context.Context) ([]byte, error) {
-		fetchCalls++
-		return want, nil
-	}
+		want := []byte(_wantValue)
+		fetchCalls := 0
+		fetch := func(ctx context.Context) ([]byte, error) {
+			fetchCalls++
+			return want, nil
+		}
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, fetchCalls)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		synctest.Wait()
 
-	select {
-	case <-coord.releaseNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Release")
-	}
-	assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+		assert.Equal(t, want, got)
+		assert.Equal(t, 1, fetchCalls)
+		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationRelease, _resultError)), 0)
+	})
 }
 
 func TestHerdgate_DoCoordinationFollower(t *testing.T) {
-	store := inmemorystore.New()
-	coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
-	hg := newTestHerdgate(store, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		store := inmemorystore.New()
+		coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
+		hg := newTestHerdgate(store, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchCalls := 0
-	fetch := func(ctx context.Context) ([]byte, error) {
-		fetchCalls++
-		return want, nil
-	}
+		want := []byte(_wantValue)
+		fetchCalls := 0
+		fetch := func(ctx context.Context) ([]byte, error) {
+			fetchCalls++
+			return want, nil
+		}
 
-	go func() {
-		time.Sleep(2 * _followerPollInterval)
-		store.Set(t.Context(), _key, want, time.Minute)
-	}()
+		go func() {
+			time.Sleep(2 * _followerPollInterval)
+			store.Set(t.Context(), _key, want, time.Minute)
+		}()
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 0, fetchCalls)
-	assert.Len(t, coord.acquireArgs(), 1)
-	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultContended)), 0)
-	assert.Equal(t, 0, testutil.CollectAndCount(hg.metrics.cacheWrites))
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, 0, fetchCalls)
+		assert.Len(t, coord.acquireArgs(), 1)
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquire, _resultContended)), 0)
+		assert.Equal(t, 0, testutil.CollectAndCount(hg.metrics.cacheWrites))
+	})
 }
 
 func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
-	store := inmemorystore.New()
-	coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
-	hg := newTestHerdgate(store, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		store := inmemorystore.New()
+		coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
+		hg := newTestHerdgate(store, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchCalls := 0
-	fetch := func(ctx context.Context) ([]byte, error) {
-		fetchCalls++
-		return want, nil
-	}
+		want := []byte(_wantValue)
+		fetchCalls := 0
+		fetch := func(ctx context.Context) ([]byte, error) {
+			fetchCalls++
+			return want, nil
+		}
 
-	go func() {
-		time.Sleep(_electionRetryInterval + 2*_followerPollInterval)
-		store.Set(t.Context(), _key, want, time.Minute)
-	}()
+		go func() {
+			time.Sleep(_electionRetryInterval + 2*_followerPollInterval)
+			store.Set(t.Context(), _key, want, time.Minute)
+		}()
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 0, fetchCalls)
-	assert.Len(t, coord.acquireArgs(), 2)
-	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultContended)), 0)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, 0, fetchCalls)
+		assert.Len(t, coord.acquireArgs(), 2)
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultContended)), 0)
+	})
 }
 
 func TestHerdgate_DoCoordinationFollowerRetryAcquired(t *testing.T) {
-	store := &fakeStore{}
-	coord := &fakeCoordination{
-		acquireResults: []acquireResult{{acquired: false}, {token: _token, acquired: true}},
-		renewResults:   []renewResult{{renewed: true}},
-		releaseNotify:  make(chan releaseArgs, 1),
-	}
-	hg := newTestHerdgate(store, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{}
+		coord := &fakeCoordination{
+			acquireResults: []acquireResult{{acquired: false}, {token: _token, acquired: true}},
+		}
+		hg := newTestHerdgate(store, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchCalls := 0
-	fetch := func(ctx context.Context) ([]byte, error) {
-		fetchCalls++
-		return want, nil
-	}
+		want := []byte(_wantValue)
+		fetchCalls := 0
+		fetch := func(ctx context.Context) ([]byte, error) {
+			fetchCalls++
+			return want, nil
+		}
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, fetchCalls)
-	assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
-	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultAcquired)), 0)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		synctest.Wait()
 
-	select {
-	case <-coord.releaseNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Release")
-	}
-	assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+		assert.Equal(t, want, got)
+		assert.Equal(t, 1, fetchCalls)
+		assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultAcquired)), 0)
+		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+	})
 }
 
 func TestHerdgate_DoCoordinationFollowerRetryAcquireError(t *testing.T) {
-	store := &fakeStore{}
-	coord := &fakeCoordination{
-		acquireResults: []acquireResult{{acquired: false}, {err: assert.AnError}},
-	}
-	hg := newTestHerdgate(store, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{}
+		coord := &fakeCoordination{
+			acquireResults: []acquireResult{{acquired: false}, {err: assert.AnError}},
+		}
+		hg := newTestHerdgate(store, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchCalls := 0
-	fetch := func(ctx context.Context) ([]byte, error) {
-		fetchCalls++
-		return want, nil
-	}
+		want := []byte(_wantValue)
+		fetchCalls := 0
+		fetch := func(ctx context.Context) ([]byte, error) {
+			fetchCalls++
+			return want, nil
+		}
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, fetchCalls)
-	assert.Len(t, coord.acquireArgs(), 2)
-	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultError)), 0)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, 1, fetchCalls)
+		assert.Len(t, coord.acquireArgs(), 2)
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultError)), 0)
+	})
 }
 
 func TestHerdgate_DoCoordinationFollowerPollPanic(t *testing.T) {
-	store := &fakeStore{getPanic: assert.AnError}
-	coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
-	hg := newTestHerdgate(store, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{getPanic: assert.AnError}
+		coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
+		hg := newTestHerdgate(store, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchCalls := 0
-	fetch := func(ctx context.Context) ([]byte, error) {
-		fetchCalls++
-		return want, nil
-	}
+		want := []byte(_wantValue)
+		fetchCalls := 0
+		fetch := func(ctx context.Context) ([]byte, error) {
+			fetchCalls++
+			return want, nil
+		}
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.Equal(t, 1, fetchCalls)
-	assert.Len(t, coord.acquireArgs(), 1)
-	assert.InDelta(t, 0, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultContended)), 0)
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, 1, fetchCalls)
+		assert.Len(t, coord.acquireArgs(), 1)
+		assert.InDelta(t, 0, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationAcquireRetry, _resultContended)), 0)
+	})
 }
 
 func TestHerdgate_DoCoordinationConcurrentCallsAcrossInstancesCoalesced(t *testing.T) {
@@ -802,125 +793,120 @@ func TestHerdgate_DoAfterClose(t *testing.T) {
 }
 
 func TestHerdgate_CloseInFlightFetch(t *testing.T) {
-	hg := newTestHerdgate(&fakeStore{})
+	synctest.Test(t, func(t *testing.T) {
+		hg := newTestHerdgate(&fakeStore{})
 
-	want := []byte(_wantValue)
-	fetchStarted := make(chan struct{})
-	unblockFetch := make(chan struct{})
-	doDone := make(chan struct{})
-	go func() {
-		defer close(doDone)
-		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-			close(fetchStarted)
-			<-unblockFetch
-			return want, nil
-		})
-		assert.NoError(t, err)
-		assert.Equal(t, want, got)
-	}()
-	<-fetchStarted
+		want := []byte(_wantValue)
+		unblockFetch := make(chan struct{})
+		go func() {
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+				<-unblockFetch
+				return want, nil
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, want, got)
+		}()
+		synctest.Wait()
 
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- hg.Close(t.Context()) }()
+		closeDone := make(chan error, 1)
+		go func() { closeDone <- hg.Close(t.Context()) }()
+		synctest.Wait()
 
-	select {
-	case err := <-closeDone:
-		t.Fatalf("Close returned before the in-flight fetch finished: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
+		select {
+		case err := <-closeDone:
+			t.Fatalf("Close returned before the in-flight fetch finished: %v", err)
+		default:
+		}
 
-	close(unblockFetch)
-	<-doDone
+		close(unblockFetch)
+		synctest.Wait()
 
-	select {
-	case err := <-closeDone:
-		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("Close did not return after the fetch finished")
-	}
+		select {
+		case err := <-closeDone:
+			require.NoError(t, err)
+		default:
+			t.Fatal("Close did not return after the in-flight fetch finished")
+		}
+	})
 }
 
 func TestHerdgate_CloseMultipleInFlightFetches(t *testing.T) {
-	hg := newTestHerdgate(inmemorystore.New())
+	synctest.Test(t, func(t *testing.T) {
+		hg := newTestHerdgate(inmemorystore.New())
 
-	key1, key2 := _key+"1", _key+"2" // the same key would coalesce into one flight
-	want1, want2 := []byte(_wantValue+"1"), []byte(_wantValue+"2")
+		key1, key2 := _key+"1", _key+"2" // the same key would coalesce into one flight
+		want1, want2 := []byte(_wantValue+"1"), []byte(_wantValue+"2")
+		unblockFetch1, unblockFetch2 := make(chan struct{}), make(chan struct{})
 
-	fetchStarted1, fetchStarted2 := make(chan struct{}), make(chan struct{})
-	unblockFetch1, unblockFetch2 := make(chan struct{}), make(chan struct{})
-	doDone1, doDone2 := make(chan struct{}), make(chan struct{})
-	errs := make(chan error, 2)
+		startDo := func(key string, want []byte, unblockFetch chan struct{}) {
+			go func() {
+				got, err := hg.Do(t.Context(), key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+					<-unblockFetch
+					return want, nil
+				})
+				assert.NoError(t, err)
+				assert.Equal(t, want, got)
+			}()
+		}
 
-	callDo := func(key string, want []byte, fetchStarted, unblockFetch, doDone chan struct{}) {
-		defer close(doDone)
-		got, err := hg.Do(t.Context(), key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-			close(fetchStarted)
-			<-unblockFetch
-			return want, nil
-		})
-		errs <- err
-		assert.Equal(t, want, got)
-	}
+		startDo(key1, want1, unblockFetch1)
+		startDo(key2, want2, unblockFetch2)
+		synctest.Wait()
 
-	go callDo(key1, want1, fetchStarted1, unblockFetch1, doDone1)
-	go callDo(key2, want2, fetchStarted2, unblockFetch2, doDone2)
+		closeDone := make(chan error, 1)
+		go func() { closeDone <- hg.Close(t.Context()) }()
+		synctest.Wait()
 
-	<-fetchStarted1
-	<-fetchStarted2
+		close(unblockFetch1)
+		synctest.Wait()
 
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- hg.Close(t.Context()) }()
+		select {
+		case err := <-closeDone:
+			t.Fatalf("Close returned after only the first of two fetches finished: %v", err)
+		default:
+		}
 
-	close(unblockFetch1)
-	<-doDone1
+		close(unblockFetch2)
+		synctest.Wait()
 
-	select {
-	case err := <-closeDone:
-		t.Fatalf("Close returned after only the first of two fetches finished: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
-	close(unblockFetch2)
-	<-doDone2
-
-	for range 2 {
-		require.NoError(t, <-errs)
-	}
-
-	select {
-	case err := <-closeDone:
-		require.NoError(t, err)
-	case <-time.After(time.Second):
-		t.Fatal("Close did not return after both fetches finished")
-	}
+		select {
+		case err := <-closeDone:
+			require.NoError(t, err)
+		default:
+			t.Fatal("Close did not return after both fetches finished")
+		}
+	})
 }
 
 func TestHerdgate_CloseContextCanceled(t *testing.T) {
-	store := &fakeStore{}
-	hg := newTestHerdgate(store)
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{}
+		hg := newTestHerdgate(store)
 
-	want := []byte(_wantValue)
-	fetchStarted := make(chan struct{})
-	unblockFetch := make(chan struct{})
-	doDone := make(chan struct{})
-	go func() {
-		defer close(doDone)
-		_, _ = hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-			close(fetchStarted)
-			<-unblockFetch
-			return want, nil
-		})
-	}()
-	<-fetchStarted
+		want := []byte(_wantValue)
+		unblockFetch := make(chan struct{})
+		go func() {
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+				<-unblockFetch
+				return want, nil
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, want, got)
+		}()
+		synctest.Wait()
 
-	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
-	defer cancel()
-	require.ErrorIs(t, hg.Close(ctx), context.DeadlineExceeded)
+		closeTimeout := 50 * time.Millisecond
+		ctx, cancel := context.WithTimeout(t.Context(), closeTimeout)
+		defer cancel()
+		start := time.Now()
+		require.ErrorIs(t, hg.Close(ctx), context.DeadlineExceeded)
+		assert.Equal(t, closeTimeout, time.Since(start))
 
-	close(unblockFetch)
-	<-doDone
+		close(unblockFetch)
+		synctest.Wait()
 
-	assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
+		assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
+	})
 }
 
 func TestHerdgate_CloseExpiredContextWithoutFlights(t *testing.T) {
@@ -961,58 +947,52 @@ func TestHerdgate_CloseConcurrencySafe(t *testing.T) {
 }
 
 func TestHerdgate_CloseCoordinationLeaseHeld(t *testing.T) {
-	coord := &fakeCoordination{
-		acquireResults: []acquireResult{{token: _token, acquired: true}},
-		renewResults:   []renewResult{{renewed: true}},
-		renewNotify:    make(chan renewArgs, 10),
-		releaseNotify:  make(chan releaseArgs, 1),
-	}
-	hg := newTestHerdgate(&fakeStore{}, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{
+			acquireResults: []acquireResult{{token: _token, acquired: true}},
+			renewResults:   []renewResult{{renewed: true}},
+		}
+		hg := newTestHerdgate(&fakeStore{}, WithCoordination(coord))
 
-	want := []byte(_wantValue)
-	fetchStarted := make(chan struct{})
-	unblockFetch := make(chan struct{})
-	doDone := make(chan struct{})
-	go func() {
-		defer close(doDone)
-		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-			close(fetchStarted)
-			<-unblockFetch
-			return want, nil
-		})
-		assert.NoError(t, err)
-		assert.Equal(t, want, got)
-	}()
-	<-fetchStarted
+		want := []byte(_wantValue)
+		unblockFetch := make(chan struct{})
+		go func() {
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+				<-unblockFetch
+				return want, nil
+			})
+			assert.NoError(t, err)
+			assert.Equal(t, want, got)
+		}()
 
-	// Wait for a renewal. This confirms the heartbeat is running, so the
-	// lease is still held when Close is called next
-	select {
-	case <-coord.renewNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Renew")
-	}
+		// A renewal confirms the heartbeat is running, so the lease is
+		// still held when Close is called next
+		time.Sleep(_defaultHeartbeatInterval)
+		synctest.Wait()
+		require.Len(t, coord.renewArgs(), 1)
 
-	closeDone := make(chan error, 1)
-	go func() { closeDone <- hg.Close(t.Context()) }()
+		closeDone := make(chan error, 1)
+		go func() { closeDone <- hg.Close(t.Context()) }()
+		synctest.Wait()
 
-	select {
-	case <-coord.releaseNotify:
-		t.Fatal("Coordination.Release was called before the fetch finished")
-	case <-time.After(50 * time.Millisecond):
-	}
+		select {
+		case err := <-closeDone:
+			t.Fatalf("Close returned before the in-flight fetch finished: %v", err)
+		default:
+		}
+		assert.Empty(t, coord.releaseArgs(), "Coordination.Release was called before the in-flight fetch finished")
 
-	close(unblockFetch)
-	<-doDone
+		close(unblockFetch)
+		synctest.Wait()
 
-	select {
-	case <-coord.releaseNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Release")
-	}
-	assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
-
-	require.NoError(t, <-closeDone)
+		select {
+		case err := <-closeDone:
+			require.NoError(t, err)
+		default:
+			t.Fatal("Close did not return after the in-flight fetch finished")
+		}
+		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs(), "Coordination.Release was not called exactly once after the in-flight fetch finished")
+	})
 }
 
 func TestHerdgate_AdmitFlightAfterClose(t *testing.T) {
@@ -1025,109 +1005,89 @@ func TestHerdgate_AdmitFlightAfterClose(t *testing.T) {
 }
 
 func TestHerdgate_StartHeartbeatPeriodicRenewal(t *testing.T) {
-	coord := &fakeCoordination{renewResults: []renewResult{{renewed: true}}, renewNotify: make(chan renewArgs, 10)}
-	hg := newTestHerdgate(nil, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{renewResults: []renewResult{{renewed: true}}}
+		hg := newTestHerdgate(nil, WithCoordination(coord))
 
-	stop := hg.startHeartbeat(t.Context(), _key, _token)
-	defer stop()
+		stop := hg.startHeartbeat(t.Context(), _key, _token)
+		defer stop()
 
-	for range 2 {
-		select {
-		case got := <-coord.renewNotify:
-			assert.Equal(t, renewArgs{key: _key, token: _token, ttl: _defaultLeaseTTL}, got)
-		case <-time.After(time.Second):
-			t.Fatal("did not receive the expected call to Coordination.Renew")
-		}
-	}
+		const ticks = 2
+		time.Sleep(ticks * _defaultHeartbeatInterval)
+		synctest.Wait()
+
+		wantRenewArgs := slices.Repeat([]renewArgs{{key: _key, token: _token, ttl: _defaultLeaseTTL}}, ticks)
+		assert.Equal(t, wantRenewArgs, coord.renewArgs())
+	})
 }
 
 func TestHerdgate_StartHeartbeatStop(t *testing.T) {
-	coord := &fakeCoordination{renewResults: []renewResult{{renewed: true}}}
-	hg := newTestHerdgate(nil, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{renewResults: []renewResult{{renewed: true}}}
+		hg := newTestHerdgate(nil, WithCoordination(coord))
 
-	stop := hg.startHeartbeat(t.Context(), _key, _token)
-
-	stopped := make(chan struct{})
-	go func() {
+		stop := hg.startHeartbeat(t.Context(), _key, _token)
 		stop()
-		close(stopped)
-	}()
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("stop did not return")
-	}
+		time.Sleep(_defaultHeartbeatInterval) // a stopped heartbeat must not renew on its next tick
+		synctest.Wait()
+
+		assert.Empty(t, coord.renewArgs())
+	})
 }
 
 func TestHerdgate_StartHeartbeatStopDuringRenew(t *testing.T) {
-	coord := &fakeCoordination{
-		renewResults: []renewResult{{hang: true}},
-		renewNotify:  make(chan renewArgs, 10),
-	}
-	hg := newTestHerdgate(nil, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{renewResults: []renewResult{{hang: true}}}
+		hg := newTestHerdgate(nil, WithCoordination(coord))
 
-	stop := hg.startHeartbeat(t.Context(), _key, _token)
+		stop := hg.startHeartbeat(t.Context(), _key, _token)
 
-	select {
-	case <-coord.renewNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Renew")
-	}
-
-	stopped := make(chan struct{})
-	go func() {
+		time.Sleep(_defaultHeartbeatInterval)
+		synctest.Wait()
+		start := time.Now()
 		stop()
-		close(stopped)
-	}()
 
-	select {
-	case <-stopped:
-	case <-time.After(time.Second):
-		t.Fatal("stop did not return during an in-flight renewal")
-	}
-
-	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationRenew, _resultError)), 0)
+		assert.Zero(t, time.Since(start), "stop did not cancel the in-flight renewal")
+		assert.Equal(t, []renewArgs{{key: _key, token: _token, ttl: _defaultLeaseTTL}}, coord.renewArgs())
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_coordinationOperationRenew, _resultError)), 0)
+	})
 }
 
 func TestHerdgate_StartHeartbeatLeaseLost(t *testing.T) {
-	coord := &fakeCoordination{renewResults: []renewResult{{renewed: false}}, renewNotify: make(chan renewArgs, 10)}
-	hg := newTestHerdgate(nil, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{renewResults: []renewResult{{renewed: false}}}
+		hg := newTestHerdgate(nil, WithCoordination(coord))
 
-	stop := hg.startHeartbeat(t.Context(), _key, _token)
-	defer stop()
+		stop := hg.startHeartbeat(t.Context(), _key, _token)
+		defer stop()
 
-	select {
-	case <-coord.renewNotify:
-	case <-time.After(time.Second):
-		t.Fatal("did not receive the expected call to Coordination.Renew")
-	}
+		// A confirmed loss ends the heartbeat on its own, without calling stop
+		const ticks = 3
+		time.Sleep(ticks * _defaultHeartbeatInterval)
+		synctest.Wait()
 
-	// A confirmed loss ends the heartbeat on its own, without calling stop
-	select {
-	case <-coord.renewNotify:
-		t.Fatal("received an unexpected call to Coordination.Renew after the lease was lost")
-	case <-time.After(2 * _defaultHeartbeatInterval):
-	}
+		assert.Equal(t, []renewArgs{{key: _key, token: _token, ttl: _defaultLeaseTTL}}, coord.renewArgs())
+	})
 }
 
 func TestHerdgate_StartHeartbeatLeasePresumedLost(t *testing.T) {
-	coord := &fakeCoordination{renewResults: []renewResult{{err: assert.AnError}}, renewNotify: make(chan renewArgs, 10)}
-	hg := newTestHerdgate(nil, WithCoordination(coord))
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{renewResults: []renewResult{{err: assert.AnError}}}
+		hg := newTestHerdgate(nil, WithCoordination(coord))
 
-	stop := hg.startHeartbeat(t.Context(), _key, _token)
-	defer stop()
+		stop := hg.startHeartbeat(t.Context(), _key, _token)
+		defer stop()
 
-	// A presumed loss ends the heartbeat on its own, without calling stop
-	renews := 0
-	for {
-		select {
-		case <-coord.renewNotify:
-			renews++
-		case <-time.After(2 * _defaultHeartbeatInterval):
-			assert.GreaterOrEqual(t, renews, int(_defaultLeaseTTL/_defaultHeartbeatInterval))
-			return
-		}
-	}
+		// A presumed loss ends the heartbeat on its own, without calling stop.
+		// The heartbeat gives up on the first failed renewal past the lease TTL
+		time.Sleep(_defaultLeaseTTL + _defaultHeartbeatInterval) // up to the failed renewal after which the heartbeat gives up
+		time.Sleep(_defaultHeartbeatInterval)                    // one more tick, which must not renew
+		synctest.Wait()
+
+		wantRenews := int(_defaultLeaseTTL/_defaultHeartbeatInterval) + 1
+		wantRenewArgs := slices.Repeat([]renewArgs{{key: _key, token: _token, ttl: _defaultLeaseTTL}}, wantRenews)
+		assert.Equal(t, wantRenewArgs, coord.renewArgs())
+	})
 }
 
 func TestHerdgate_GuardedRenewMetrics(t *testing.T) {
@@ -1175,39 +1135,46 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 	testCases := map[string]struct {
 		parentTimeout time.Duration
 		timeout       time.Duration
+		wantElapsed   time.Duration
 	}{
-		"no parent deadline":                   {parentTimeout: 0, timeout: 150 * time.Millisecond},
-		"parent deadline shorter than timeout": {parentTimeout: 150 * time.Millisecond, timeout: time.Minute},
+		"no parent deadline":                   {parentTimeout: 0, timeout: 150 * time.Millisecond, wantElapsed: 150 * time.Millisecond},
+		"parent deadline shorter than timeout": {parentTimeout: 150 * time.Millisecond, timeout: time.Minute, wantElapsed: 150 * time.Millisecond},
 	}
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			store := &fakeStore{getFound: false}
-			hg := newTestHerdgate(store)
+			synctest.Test(t, func(t *testing.T) {
+				store := &fakeStore{getFound: false}
+				hg := newTestHerdgate(store)
 
-			ctx := t.Context()
-			if tc.parentTimeout > 0 {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, tc.parentTimeout)
-				defer cancel()
-			}
+				ctx := t.Context()
+				if tc.parentTimeout > 0 {
+					var cancel context.CancelFunc
+					ctx, cancel = context.WithTimeout(ctx, tc.parentTimeout)
+					defer cancel()
+				}
 
-			value, found, err := hg.awaitLeaderValue(ctx, _key, tc.timeout)
-			require.NoError(t, err)
-			assert.Nil(t, value)
-			assert.False(t, found)
+				start := time.Now()
+				value, found, err := hg.awaitLeaderValue(ctx, _key, tc.timeout)
+				require.NoError(t, err)
+				assert.Equal(t, tc.wantElapsed, time.Since(start))
+				assert.Nil(t, value)
+				assert.False(t, found)
+			})
 		})
 	}
 }
 
 func TestHerdgate_AwaitLeaderValueStorePanic(t *testing.T) {
-	store := &fakeStore{getPanic: assert.AnError}
-	hg := newTestHerdgate(store)
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{getPanic: assert.AnError}
+		hg := newTestHerdgate(store)
 
-	value, found, err := hg.awaitLeaderValue(t.Context(), _key, 250*time.Millisecond)
-	require.Error(t, err)
-	assert.False(t, found)
-	assert.Nil(t, value)
+		value, found, err := hg.awaitLeaderValue(t.Context(), _key, 250*time.Millisecond)
+		require.Error(t, err)
+		assert.False(t, found)
+		assert.Nil(t, value)
+	})
 }
 
 func newTestHerdgate(store Store, opts ...HerdgateOption) *Herdgate {
@@ -1218,55 +1185,37 @@ func newTestHerdgate(store Store, opts ...HerdgateOption) *Herdgate {
 	return hg
 }
 
+// countConcurrentFetches must be called inside a synctest bubble.
 func countConcurrentFetches(t *testing.T, hg *Herdgate, callers int) int {
 	t.Helper()
 
 	return countConcurrentFetchesAcross(t, slices.Repeat([]*Herdgate{hg}, callers))
 }
 
+// countConcurrentFetchesAcross must be called inside a synctest bubble.
 func countConcurrentFetchesAcross(t *testing.T, instances []*Herdgate) int {
 	t.Helper()
 
 	want := []byte(_wantValue)
 	var calls atomic.Int64
-	leaderStarted := make(chan struct{})
-	var closeOnce sync.Once
-
-	leader, followers := instances[0], instances[1:]
-	wantCoalesced := 0
-	for _, hg := range followers {
-		if hg == leader {
-			wantCoalesced++
-		}
-	}
-	baseLeaderCacheMisses := testutil.ToFloat64(leader.metrics.cacheLookups.WithLabelValues(_resultLookupMiss))
+	unblockFetch := make(chan struct{})
 
 	var wg sync.WaitGroup
 	errs := make(chan error, len(instances))
-	callDo := func(hg *Herdgate) {
-		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
-			calls.Add(1)
-			closeOnce.Do(func() { close(leaderStarted) })
-			if wantCoalesced > 0 {
-				// Cache misses signal that the leader and coalesced callers are about to join the flight
-				assert.Eventually(t, func() bool {
-					return testutil.ToFloat64(leader.metrics.cacheLookups.WithLabelValues(_resultLookupMiss))-baseLeaderCacheMisses == float64(1+wantCoalesced)
-				}, time.Second, time.Millisecond, "the leader and the coalesced callers did not record their expected cache misses")
-				time.Sleep(10 * time.Millisecond) // small buffer between the cache miss and the actual call
-			}
-			return want, nil
+	for _, hg := range instances {
+		wg.Go(func() {
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, func(context.Context) ([]byte, error) {
+				calls.Add(1)
+				<-unblockFetch
+				return want, nil
+			})
+			errs <- err
+			assert.Equal(t, want, got)
 		})
-		errs <- err
-		assert.Equal(t, want, got)
 	}
 
-	wg.Go(func() { callDo(leader) })
-	<-leaderStarted
-
-	for _, hg := range followers {
-		wg.Go(func() { callDo(hg) })
-	}
-
+	synctest.Wait() // returns once every caller has started or joined its instance's flight
+	close(unblockFetch)
 	wg.Wait()
 	close(errs)
 

@@ -48,9 +48,6 @@ type fakeCoordination struct {
 	renewPanic   any
 	releasePanic any
 
-	renewNotify   chan renewArgs   // if non-nil, Renew sends its args here without blocking
-	releaseNotify chan releaseArgs // if non-nil, Release sends its args here without blocking
-
 	guarded struct {
 		mu          sync.Mutex
 		acquireArgs []acquireArgs
@@ -72,6 +69,7 @@ func (f *fakeCoordination) Acquire(ctx context.Context, key string, ttl time.Dur
 	if f.acquirePanic != nil {
 		panic(f.acquirePanic)
 	}
+
 	if len(f.acquireResults) == 0 {
 		return "", false, nil
 	}
@@ -91,12 +89,7 @@ func (f *fakeCoordination) Renew(ctx context.Context, key, token string, ttl tim
 	if f.renewPanic != nil {
 		panic(f.renewPanic)
 	}
-	if f.renewNotify != nil {
-		select {
-		case f.renewNotify <- args:
-		default:
-		}
-	}
+
 	if len(f.renewResults) == 0 {
 		return false, nil
 	}
@@ -120,12 +113,7 @@ func (f *fakeCoordination) Release(ctx context.Context, key, token string) error
 	if f.releasePanic != nil {
 		panic(f.releasePanic)
 	}
-	if f.releaseNotify != nil {
-		select {
-		case f.releaseNotify <- args:
-		default:
-		}
-	}
+
 	if len(f.releaseResults) == 0 {
 		return nil
 	}
@@ -138,6 +126,12 @@ func (f *fakeCoordination) acquireArgs() []acquireArgs {
 	f.guarded.mu.Lock()
 	defer f.guarded.mu.Unlock()
 	return slices.Clone(f.guarded.acquireArgs)
+}
+
+func (f *fakeCoordination) renewArgs() []renewArgs {
+	f.guarded.mu.Lock()
+	defer f.guarded.mu.Unlock()
+	return slices.Clone(f.guarded.renewArgs)
 }
 
 func (f *fakeCoordination) releaseArgs() []releaseArgs {
