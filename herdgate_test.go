@@ -144,9 +144,9 @@ func TestHerdgate_DoFetchPanic(t *testing.T) {
 		_errValueTestCase: {
 			panicVal:    assert.AnError,
 			wantErrIs:   assert.AnError,
-			wantErrText: "fetch panicked: assert.AnError general error for testing",
+			wantErrText: "herdgate: fetch panicked: assert.AnError general error for testing",
 		},
-		_nonErrValueTestCase: {panicVal: _panicValue, wantErrText: "fetch panicked: generic panic value"},
+		_nonErrValueTestCase: {panicVal: _panicValue, wantErrText: "herdgate: fetch panicked: generic panic value"},
 	}
 
 	for name, tc := range testCases {
@@ -705,7 +705,7 @@ func TestHerdgate_DoDecodeMarshalPanic(t *testing.T) {
 	}
 
 	got, err := DoDecode(t.Context(), hg, _key, DoOptions{TTL: time.Minute, Codec: codec}, fetch)
-	require.EqualError(t, err, "marshal herdgate.jsonPayload panicked: generic panic value")
+	require.EqualError(t, err, "herdgate: marshal herdgate.jsonPayload panicked: generic panic value")
 	assert.Equal(t, jsonPayload{}, got)
 	assert.Empty(t, store.setCalls)
 	assert.Equal(t, 0, codec.unmarshalCalls)
@@ -737,7 +737,7 @@ func TestHerdgate_DoDecodeUnmarshalPanic(t *testing.T) {
 	}
 
 	got, err := DoDecode(t.Context(), hg, _key, DoOptions{TTL: time.Minute, Codec: codec}, fetch)
-	require.EqualError(t, err, "unmarshal *herdgate.jsonPayload panicked: generic panic value")
+	require.EqualError(t, err, "herdgate: unmarshal *herdgate.jsonPayload panicked: generic panic value")
 	assert.Equal(t, jsonPayload{}, got)
 	assert.Equal(t, 0, codec.marshalCalls)
 }

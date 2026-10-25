@@ -131,7 +131,7 @@ func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch fu
 		}
 		val, ok := res.Val.([]byte)
 		if !ok {
-			return nil, fmt.Errorf("shared result was %T, but []byte was expected", res.Val)
+			return nil, fmt.Errorf("herdgate: shared result is %T, not []byte", res.Val)
 		}
 		return bytes.Clone(val), nil
 	case <-ctx.Done():
@@ -271,7 +271,7 @@ func (hg *Herdgate) admitFlight() (done func(), admitted bool) {
 func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Duration, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("unexpected panic: %w", errFromPanic(ctx, r))
+			err = fmt.Errorf("herdgate: unexpected panic: %w", errFromPanic(ctx, r))
 		}
 	}()
 
@@ -552,7 +552,7 @@ func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Con
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("fetch panicked: %w", errFromPanic(ctx, r))
+			err = fmt.Errorf("herdgate: fetch panicked: %w", errFromPanic(ctx, r))
 		}
 		hg.metrics.observeFetch(start, err)
 	}()

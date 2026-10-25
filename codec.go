@@ -29,7 +29,7 @@ func (JSONCodec) Unmarshal(data []byte, v any) error {
 func guardedMarshal(ctx context.Context, codec Codec, v any) (_ []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("marshal %T panicked: %w", v, errFromPanic(ctx, r))
+			err = fmt.Errorf("herdgate: marshal %T panicked: %w", v, errFromPanic(ctx, r))
 		}
 	}()
 
@@ -44,7 +44,7 @@ func guardedMarshal(ctx context.Context, codec Codec, v any) (_ []byte, err erro
 func guardedUnmarshal(ctx context.Context, codec Codec, data []byte, v any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("unmarshal %T panicked: %w", v, errFromPanic(ctx, r))
+			err = fmt.Errorf("herdgate: unmarshal %T panicked: %w", v, errFromPanic(ctx, r))
 		}
 	}()
 
