@@ -172,6 +172,20 @@ func TestHerdgate_DoFetchPanic(t *testing.T) {
 	}
 }
 
+func TestHerdgate_DoFetchNilValue(t *testing.T) {
+	store := &fakeStore{}
+	hg := newTestHerdgate(store)
+
+	fetch := func(ctx context.Context) ([]byte, error) {
+		return nil, nil
+	}
+
+	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+	require.NoError(t, err)
+	assert.Equal(t, []byte{}, got)
+	assert.Equal(t, []setArgs{{key: _key, value: []byte{}, ttl: time.Minute}}, store.setArgs())
+}
+
 func TestHerdgate_DoStoreSetPanic(t *testing.T) {
 	want := []byte(_wantValue)
 	store := &fakeStore{setPanic: assert.AnError}

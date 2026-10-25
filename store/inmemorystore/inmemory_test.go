@@ -55,7 +55,7 @@ func TestStore_GetHit(t *testing.T) {
 	testCases := map[string][]byte{
 		"key1": []byte("foo"),
 		"key2": []byte("bar"),
-		"key3": nil,
+		"key3": {},
 	}
 
 	s := New()
@@ -123,6 +123,15 @@ func TestStore_SetValueOverwrite(t *testing.T) {
 	got, ok = s.Get(t.Context(), _key)
 	assert.True(t, ok)
 	assert.Equal(t, want, got)
+}
+
+func TestStore_SetNilValue(t *testing.T) {
+	s := New()
+	s.Set(t.Context(), _key, nil, _noTTL)
+
+	got, ok := s.Get(t.Context(), _key)
+	require.True(t, ok)
+	assert.Equal(t, []byte{}, got)
 }
 
 func TestStore_SetTTL(t *testing.T) {

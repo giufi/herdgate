@@ -74,7 +74,8 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 }
 
 // Do returns the cached value for the key, if present. On a cache miss,
-// the value comes from fetch and is cached according to opts.
+// the value comes from fetch and is cached according to opts. If fetch
+// succeeds with a nil value, Do returns a non-nil, empty []byte instead.
 //
 // Modifying the returned value does not affect the cache or any value returned
 // by another Do call.
@@ -259,11 +260,14 @@ func (hg *Herdgate) admitFlight() (done func(), admitted bool) {
 // coordinatedFill attempts to fill the specified key's cache entry: it
 // obtains the value, either by calling fetch directly or, if a
 // [Coordination] is configured, by coordinating with other callers
-// first, and finally caches it. See [Herdgate.coordinate] for more
-// details.
+// first, and caches it unless it obtained the value from another
+// caller. See [Herdgate.coordinate] for more details.
 //
-// Caching is best-effort on writes: a failed cache write doesn't prevent
-// the fetched value from being returned.
+// If fetch succeeds with a nil value, the value is replaced with a
+// non-nil, empty []byte before being cached or returned.
+//
+// Caching is best-effort on writes: a failed cache write does not
+// prevent the fetched value from being returned.
 //
 // An unrecovered panic makes [singleflight.Group.DoChan] re-panic it on a
 // new goroutine instead of delivering it as an error to the caller.
@@ -288,6 +292,9 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 	if err != nil {
 		_logger.Error(ctx, "Fetch failed", slog.String("key", key), slog.Any("error", err))
 		return nil, err
+	}
+	if value == nil {
+		value = []byte{}
 	}
 	_logger.Debug(ctx, "Fetch succeeded", slog.String("key", key))
 

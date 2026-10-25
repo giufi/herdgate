@@ -20,6 +20,8 @@ type Store interface {
 	//
 	// It must not modify the value, or retain it after returning.
 	//
+	// A nil value must be stored as a non-nil, empty []byte.
+	//
 	// A TTL of 0 or less means the key never expires.
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration)
 }

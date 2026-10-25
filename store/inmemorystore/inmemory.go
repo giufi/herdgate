@@ -54,8 +54,13 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
 
 // Set stores the value for the given key, replacing any existing value.
 //
+// A nil value is stored as a non-nil, empty []byte.
+//
 // A TTL of 0 or less means the key never expires.
 func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
+	if value == nil {
+		value = []byte{}
+	}
 	var expiresAt time.Time
 	if ttl > 0 {
 		expiresAt = time.Now().Add(ttl)
