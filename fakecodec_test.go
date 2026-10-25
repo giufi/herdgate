@@ -1,6 +1,9 @@
 package herdgate
 
-import "encoding/json"
+import (
+	"encoding/json"
+	"sync/atomic"
+)
 
 type fakeCodec struct {
 	marshalErr   error
@@ -9,14 +12,14 @@ type fakeCodec struct {
 	marshalPanic   any
 	unmarshalPanic any
 
-	marshalCalls   int
-	unmarshalCalls int
+	marshalCount   atomic.Int64
+	unmarshalCount atomic.Int64
 }
 
 var _ Codec = (*fakeCodec)(nil)
 
 func (f *fakeCodec) Marshal(v any) ([]byte, error) {
-	f.marshalCalls++
+	f.marshalCount.Add(1)
 	if f.marshalPanic != nil {
 		panic(f.marshalPanic)
 	}
@@ -27,7 +30,7 @@ func (f *fakeCodec) Marshal(v any) ([]byte, error) {
 }
 
 func (f *fakeCodec) Unmarshal(data []byte, v any) error {
-	f.unmarshalCalls++
+	f.unmarshalCount.Add(1)
 	if f.unmarshalPanic != nil {
 		panic(f.unmarshalPanic)
 	}

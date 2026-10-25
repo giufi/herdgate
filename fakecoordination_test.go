@@ -2,21 +2,23 @@ package herdgate
 
 import (
 	"context"
+	"slices"
+	"sync"
 	"time"
 )
 
-type acquireCall struct {
+type acquireArgs struct {
 	key string
 	ttl time.Duration
 }
 
-type renewCall struct {
+type renewArgs struct {
 	key   string
 	token string
 	ttl   time.Duration
 }
 
-type releaseCall struct {
+type releaseArgs struct {
 	key   string
 	token string
 }
@@ -30,6 +32,7 @@ type acquireResult struct {
 type renewResult struct {
 	renewed bool
 	err     error
+	hang    bool // if true, Renew blocks until ctx is canceled, then returns (false, ctx.Err())
 }
 
 type releaseResult struct {
@@ -37,8 +40,6 @@ type releaseResult struct {
 }
 
 type fakeCoordination struct {
-	acquireCalls []acquireCall
-
 	acquireResults []acquireResult // one entry per Acquire call, subsequent calls repeat the last one. If empty, Acquire reports the lease as contended
 	renewResults   []renewResult   // one entry per Renew call, subsequent calls repeat the last one. If empty, Renew reports the lease as lost
 	releaseResults []releaseResult // one entry per Release call, subsequent calls repeat the last one. If empty, Release succeeds
@@ -47,72 +48,100 @@ type fakeCoordination struct {
 	renewPanic   any
 	releasePanic any
 
-	renewHold chan struct{} // when non-nil, holds Renew until closed or ctx is canceled
+	renewNotify   chan renewArgs   // if non-nil, Renew sends its args here without blocking
+	releaseNotify chan releaseArgs // if non-nil, Release sends its args here without blocking
 
-	renewNotify   chan renewCall   // when non-nil, receives every Renew call
-	releaseNotify chan releaseCall // when non-nil, receives every Release call
+	guarded struct {
+		mu          sync.Mutex
+		acquireArgs []acquireArgs
+		renewArgs   []renewArgs
+		releaseArgs []releaseArgs
+	}
 }
 
 var _ Coordination = (*fakeCoordination)(nil)
 
 func (f *fakeCoordination) Acquire(ctx context.Context, key string, ttl time.Duration) (string, bool, error) {
-	f.acquireCalls = append(f.acquireCalls, acquireCall{key: key, ttl: ttl})
+	args := acquireArgs{key: key, ttl: ttl}
+
+	f.guarded.mu.Lock()
+	f.guarded.acquireArgs = append(f.guarded.acquireArgs, args)
+	callIndex := len(f.guarded.acquireArgs) - 1
+	f.guarded.mu.Unlock()
+
 	if f.acquirePanic != nil {
 		panic(f.acquirePanic)
 	}
 	if len(f.acquireResults) == 0 {
 		return "", false, nil
 	}
-	result := f.acquireResults[0]
-	if len(f.acquireResults) > 1 {
-		f.acquireResults = f.acquireResults[1:]
-	}
+	resultIndex := min(callIndex, len(f.acquireResults)-1)
+	result := f.acquireResults[resultIndex]
 	return result.token, result.acquired, result.err
 }
 
 func (f *fakeCoordination) Renew(ctx context.Context, key, token string, ttl time.Duration) (bool, error) {
+	args := renewArgs{key: key, token: token, ttl: ttl}
+
+	f.guarded.mu.Lock()
+	f.guarded.renewArgs = append(f.guarded.renewArgs, args)
+	callIndex := len(f.guarded.renewArgs) - 1
+	f.guarded.mu.Unlock()
+
 	if f.renewPanic != nil {
 		panic(f.renewPanic)
 	}
 	if f.renewNotify != nil {
 		select {
-		case f.renewNotify <- renewCall{key: key, token: token, ttl: ttl}:
+		case f.renewNotify <- args:
 		default:
-		}
-	}
-	if f.renewHold != nil {
-		select {
-		case <-f.renewHold:
-		case <-ctx.Done():
-			return false, ctx.Err()
 		}
 	}
 	if len(f.renewResults) == 0 {
 		return false, nil
 	}
-	result := f.renewResults[0]
-	if len(f.renewResults) > 1 {
-		f.renewResults = f.renewResults[1:]
+	resultIndex := min(callIndex, len(f.renewResults)-1)
+	result := f.renewResults[resultIndex]
+	if result.hang {
+		<-ctx.Done()
+		return false, ctx.Err()
 	}
 	return result.renewed, result.err
 }
 
 func (f *fakeCoordination) Release(ctx context.Context, key, token string) error {
+	args := releaseArgs{key: key, token: token}
+
+	f.guarded.mu.Lock()
+	f.guarded.releaseArgs = append(f.guarded.releaseArgs, args)
+	callIndex := len(f.guarded.releaseArgs) - 1
+	f.guarded.mu.Unlock()
+
 	if f.releasePanic != nil {
 		panic(f.releasePanic)
 	}
 	if f.releaseNotify != nil {
 		select {
-		case f.releaseNotify <- releaseCall{key: key, token: token}:
+		case f.releaseNotify <- args:
 		default:
 		}
 	}
 	if len(f.releaseResults) == 0 {
 		return nil
 	}
-	result := f.releaseResults[0]
-	if len(f.releaseResults) > 1 {
-		f.releaseResults = f.releaseResults[1:]
-	}
+	resultIndex := min(callIndex, len(f.releaseResults)-1)
+	result := f.releaseResults[resultIndex]
 	return result.err
+}
+
+func (f *fakeCoordination) acquireArgs() []acquireArgs {
+	f.guarded.mu.Lock()
+	defer f.guarded.mu.Unlock()
+	return slices.Clone(f.guarded.acquireArgs)
+}
+
+func (f *fakeCoordination) releaseArgs() []releaseArgs {
+	f.guarded.mu.Lock()
+	defer f.guarded.mu.Unlock()
+	return slices.Clone(f.guarded.releaseArgs)
 }

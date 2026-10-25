@@ -3,10 +3,16 @@ package herdgate
 import (
 	"bytes"
 	"context"
+	"slices"
+	"sync"
 	"time"
 )
 
-type setCall struct {
+type getArgs struct {
+	key string
+}
+
+type setArgs struct {
 	key   string
 	value []byte
 	ttl   time.Duration
@@ -19,16 +25,22 @@ type fakeStore struct {
 	getPanic any
 	setPanic any
 
-	getCalls []string
-	setCalls []setCall
+	setNotify chan setArgs // if non-nil, Set sends its args here without blocking
 
-	setNotify chan setCall // when non-nil, receives every Set call
+	guarded struct {
+		mu      sync.Mutex
+		getArgs []getArgs
+		setArgs []setArgs
+	}
 }
 
 var _ Store = (*fakeStore)(nil)
 
 func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool) {
-	f.getCalls = append(f.getCalls, key)
+	f.guarded.mu.Lock()
+	f.guarded.getArgs = append(f.guarded.getArgs, getArgs{key: key})
+	f.guarded.mu.Unlock()
+
 	if f.getPanic != nil {
 		panic(f.getPanic)
 	}
@@ -36,15 +48,31 @@ func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool) {
 }
 
 func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
-	call := setCall{key: key, value: bytes.Clone(value), ttl: ttl}
-	f.setCalls = append(f.setCalls, call)
+	args := setArgs{key: key, value: bytes.Clone(value), ttl: ttl}
+
+	f.guarded.mu.Lock()
+	f.guarded.setArgs = append(f.guarded.setArgs, args)
+	f.guarded.mu.Unlock()
+
 	if f.setPanic != nil {
 		panic(f.setPanic)
 	}
 	if f.setNotify != nil {
 		select {
-		case f.setNotify <- call:
+		case f.setNotify <- args:
 		default:
 		}
 	}
+}
+
+func (f *fakeStore) getArgs() []getArgs {
+	f.guarded.mu.Lock()
+	defer f.guarded.mu.Unlock()
+	return slices.Clone(f.guarded.getArgs)
+}
+
+func (f *fakeStore) setArgs() []setArgs {
+	f.guarded.mu.Lock()
+	defer f.guarded.mu.Unlock()
+	return slices.Clone(f.guarded.setArgs)
 }
