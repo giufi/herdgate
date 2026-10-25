@@ -3,6 +3,7 @@ package inmemorystore
 import (
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/stretchr/testify/assert"
@@ -72,7 +73,6 @@ func TestStore_GetHit(t *testing.T) {
 }
 
 func TestStore_GetTTL(t *testing.T) {
-	setAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	want := []byte("foo")
 
 	testCases := map[string]struct {
@@ -88,22 +88,21 @@ func TestStore_GetTTL(t *testing.T) {
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			now := setAt
-			s := New()
-			s.now = func() time.Time { return now }
+			synctest.Test(t, func(t *testing.T) {
+				s := New()
+				s.Set(t.Context(), _key, want, tc.ttl)
+				time.Sleep(tc.delay)
 
-			s.Set(t.Context(), _key, want, tc.ttl)
-			now = setAt.Add(tc.delay)
-
-			got, ok := s.Get(t.Context(), _key)
-			assert.Equal(t, tc.wantHit, ok)
-			if tc.wantHit {
-				assert.Equal(t, want, got)
-				return
-			}
-			assert.Nil(t, got)
-			_, stillStored := s.entries.Load(t.Context(), _key)
-			assert.True(t, stillStored)
+				got, ok := s.Get(t.Context(), _key)
+				assert.Equal(t, tc.wantHit, ok)
+				if tc.wantHit {
+					assert.Equal(t, want, got)
+					return
+				}
+				assert.Nil(t, got)
+				_, stillStored := s.entries.Load(t.Context(), _key)
+				assert.True(t, stillStored)
+			})
 		})
 	}
 }
@@ -127,47 +126,50 @@ func TestStore_SetValueOverwrite(t *testing.T) {
 }
 
 func TestStore_SetTTL(t *testing.T) {
-	setAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	want := []byte("foo")
 
 	testCases := map[string]struct {
 		ttl           time.Duration
-		wantExpiresAt time.Time
+		wantExpiresIn time.Duration
 	}{
-		"positive ttl": {ttl: time.Minute, wantExpiresAt: setAt.Add(time.Minute)},
+		"positive ttl": {ttl: time.Minute, wantExpiresIn: time.Minute},
 		"zero ttl":     {ttl: _noTTL},
 		"negative ttl": {ttl: -time.Minute},
 	}
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
-			s := New()
-			s.now = func() time.Time { return setAt }
+			synctest.Test(t, func(t *testing.T) {
+				s := New()
+				s.Set(t.Context(), _key, want, tc.ttl)
 
-			s.Set(t.Context(), _key, want, tc.ttl)
-			entry, ok := s.entries.Load(t.Context(), _key)
-			require.True(t, ok)
-			assert.Equal(t, tc.wantExpiresAt, entry.expiresAt)
+				var wantExpiresAt time.Time
+				if tc.wantExpiresIn > 0 {
+					wantExpiresAt = time.Now().Add(tc.wantExpiresIn)
+				}
+				entry, ok := s.entries.Load(t.Context(), _key)
+				require.True(t, ok)
+				assert.WithinDuration(t, wantExpiresAt, entry.expiresAt, 0)
+			})
 		})
 	}
 }
 
 func TestStore_SetTTLOverwrite(t *testing.T) {
-	setAt := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	want := []byte("foo")
+	synctest.Test(t, func(t *testing.T) {
+		want := []byte("foo")
 
-	s := New()
-	s.now = func() time.Time { return setAt }
+		s := New()
+		s.Set(t.Context(), _key, want, time.Minute)
+		entry, ok := s.entries.Load(t.Context(), _key)
+		require.True(t, ok)
+		assert.WithinDuration(t, time.Now().Add(time.Minute), entry.expiresAt, 0)
 
-	s.Set(t.Context(), _key, want, time.Minute)
-	entry, ok := s.entries.Load(t.Context(), _key)
-	require.True(t, ok)
-	assert.Equal(t, setAt.Add(time.Minute), entry.expiresAt)
-
-	s.Set(t.Context(), _key, want, _noTTL)
-	entry, ok = s.entries.Load(t.Context(), _key)
-	require.True(t, ok)
-	assert.True(t, entry.expiresAt.IsZero())
+		s.Set(t.Context(), _key, want, _noTTL)
+		entry, ok = s.entries.Load(t.Context(), _key)
+		require.True(t, ok)
+		assert.True(t, entry.expiresAt.IsZero())
+	})
 }
 
 func TestStore_GetIndependentCopy(t *testing.T) {

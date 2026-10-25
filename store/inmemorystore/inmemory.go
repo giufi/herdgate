@@ -20,7 +20,6 @@ import (
 // [herdgate.Store]: https://pkg.go.dev/github.com/giufi/herdgate#Store
 type Store struct {
 	entries syncMap[string, storeEntry]
-	now     func() time.Time
 }
 
 var _logger = logging.New("herdgate/store/inmemorystore")
@@ -34,9 +33,7 @@ type storeEntry struct {
 
 // New creates a new [Store].
 func New() *Store {
-	return &Store{
-		now: time.Now,
-	}
+	return &Store{}
 }
 
 // Get returns the value stored for the given key, and reports whether it was found.
@@ -47,7 +44,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
 	if !ok {
 		return nil, false
 	}
-	if !entry.expiresAt.IsZero() && s.now().After(entry.expiresAt) {
+	if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
 		_logger.Debug(ctx, "Cache entry expired", slog.String("key", key))
 		return nil, false
 	}
@@ -60,7 +57,7 @@ func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
 func (s *Store) Set(ctx context.Context, key string, value []byte, ttl time.Duration) {
 	var expiresAt time.Time
 	if ttl > 0 {
-		expiresAt = s.now().Add(ttl)
+		expiresAt = time.Now().Add(ttl)
 	}
 	s.entries.Store(key, storeEntry{value: bytes.Clone(value), expiresAt: expiresAt})
 }
