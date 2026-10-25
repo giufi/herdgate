@@ -306,8 +306,11 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 //     periodically until called. If renewal stops mid-fetch and the
 //     lease expires, another caller may fetch concurrently.
 //   - Lost (contended by another caller): wait for the lease holder to
-//     cache the value, retrying the acquisition in case the holder
-//     stopped renewing, for about _defaultFollowerTimeout in total.
+//     cache the value, polling [Store] for it every _followerPollInterval
+//     and, after each _electionRetryInterval of polling, retrying the
+//     acquisition in case the holder stopped renewing. If a [Store.Get]
+//     call fails, or no value is cached within about _defaultFollowerTimeout,
+//     bypass Coordination.
 //   - Acquisition failed (error or panic): bypass Coordination. If the
 //     failure was due to a timeout, the lease may have been granted
 //     anyway and stays unreleased until it expires.
@@ -327,10 +330,10 @@ func (hg *Herdgate) coordinate(ctx context.Context, key string) (value []byte, f
 	defer cancel()
 
 	token, acquired, acquireErr := hg.guardedAcquire(ctx, key)
+	var pollErr error
 	// A failed poll or a failed lease acquisition ends the loop on
 	// purpose, leaving the caller to later fetch directly.
 	for acquireErr == nil && !acquired {
-		var pollErr error
 		value, found, pollErr = hg.awaitLeaderValue(waitCtx, key, _electionRetryInterval)
 		if found {
 			_logger.Debug(ctx, "Follower value found", slog.String("key", key))
@@ -347,6 +350,8 @@ func (hg *Herdgate) coordinate(ctx context.Context, key string) (value []byte, f
 		_logger.Error(ctx, "Coordination.Acquire failed, fetching directly", slog.String("key", key), slog.Any("error", acquireErr))
 	case acquired:
 		return nil, false, hg.holdLease(ctx, key, token)
+	case pollErr != nil:
+		_logger.Error(ctx, "Follower Store.Get failed, fetching directly", slog.String("key", key), slog.Any("error", pollErr))
 	default:
 		_logger.Debug(ctx, "Follower gave up waiting, fetching directly", slog.String("key", key))
 	}
@@ -522,10 +527,8 @@ func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout ti
 
 	defer func() {
 		if r := recover(); r != nil {
-			panicErr := errFromPanic(ctx, r)
 			value, found = nil, false
-			err = fmt.Errorf("store.Get panicked: %w", panicErr)
-			_logger.Error(ctx, "Poll panicked", slog.String("key", key), slog.Any("error", panicErr))
+			err = fmt.Errorf("store.Get panicked: %w", errFromPanic(ctx, r))
 		}
 	}()
 
