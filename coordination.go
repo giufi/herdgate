@@ -18,14 +18,16 @@ type Coordination interface {
 	// unless renewed via [Coordination.Renew]. Callers must provide a ttl
 	// greater than zero.
 	//
-	// acquired reports whether this call won the lease.
+	// The acquired result reports whether this call won the lease.
 	// False with a nil error means another caller currently holds it, which
 	// is expected behavior.
-	// False with a non-nil error means the acquisition attempt failed.
+	// False with a non-nil error means the acquisition attempt failed, but
+	// the lease may still have been granted.
 	//
-	// token identifies this acquisition and is required later by
-	// [Coordination.Renew] and [Coordination.Release]. It is empty unless
-	// acquired is true, in which case it is unique to this acquisition.
+	// The token result identifies this acquisition and is required later
+	// by [Coordination.Renew] and [Coordination.Release]. It is empty
+	// unless acquired is true, in which case it is unique to this
+	// acquisition.
 	Acquire(ctx context.Context, key string, ttl time.Duration) (token string, acquired bool, err error)
 
 	// Renew attempts to extend the lease for the given key, using the
@@ -39,10 +41,12 @@ type Coordination interface {
 	// currently stored for that key. The comparison and renewal must be
 	// atomic.
 	//
-	// renewed reports whether the renewal succeeded under that token.
+	// The renewed result reports whether the renewal succeeded under that
+	// token.
 	// False with a nil error means the lease was already lost, which
 	// is expected behavior.
-	// False with a non-nil error means the renewal attempt failed.
+	// False with a non-nil error means the renewal attempt failed, but the
+	// lease may still have been renewed.
 	Renew(ctx context.Context, key, token string, ttl time.Duration) (renewed bool, err error)
 
 	// Release attempts to free the lease for the given key, using the
@@ -53,6 +57,7 @@ type Coordination interface {
 	// A nil error means the lease is no longer held under that token.
 	// Either this call freed the lease, or it had already expired.
 	//
-	// A non-nil error means the release attempt failed.
+	// A non-nil error means the release attempt failed, but the lease may
+	// still have been freed.
 	Release(ctx context.Context, key, token string) error
 }

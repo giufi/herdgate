@@ -319,15 +319,16 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 //     call fails, or no value is cached within about _defaultFollowerTimeout,
 //     bypass Coordination.
 //   - Acquisition failed (error or panic): bypass Coordination. If the
-//     failure was due to a timeout, the lease may have been granted
-//     anyway and stays unreleased until it expires.
+//     failure was due to a timeout, the lease may still have been
+//     granted and stays unreleased until it expires.
 //
-// found reports that a follower obtained the leader's value, in
-// which case the caller must return it without ever calling fetch.
+// The found result reports whether a follower obtained the leader's
+// value, in which case the caller must return it without ever calling
+// fetch.
 //
-// release is a no-op unless the lease was won. When it was, calling
-// release stops the heartbeat and releases the lease, on a separate
-// goroutine that can outlast this call.
+// The release function is a no-op unless the lease was won. When it
+// was, calling release stops the heartbeat and releases the lease, on a
+// separate goroutine that can outlast this call.
 func (hg *Herdgate) coordinate(ctx context.Context, key string) (value []byte, found bool, release func()) {
 	if hg.coordination == nil {
 		return nil, false, func() {}
@@ -381,8 +382,8 @@ func (hg *Herdgate) holdLease(ctx context.Context, key, token string) (release f
 	}
 }
 
-// guardedAcquire attempts to acquire the [Coordination] lease for the
-// specified key under a timeout, turning a panic into an error.
+// guardedAcquire attempts to acquire the lease for the specified key with
+// [Coordination.Acquire] under a timeout, turning a panic into an error.
 func (hg *Herdgate) guardedAcquire(ctx context.Context, key string) (token string, acquired bool, err error) {
 	return hg.guardedAcquireWith(ctx, key, hg.metrics.recordCoordinationAcquire)
 }
@@ -394,9 +395,9 @@ func (hg *Herdgate) guardedAcquireRetry(ctx context.Context, key string) (token 
 	return hg.guardedAcquireWith(ctx, key, hg.metrics.recordCoordinationAcquireRetry)
 }
 
-// guardedAcquireWith attempts to acquire the [Coordination] lease for
-// the specified key under a timeout, turning a panic into an error,
-// and recording the outcome via recordAcquire.
+// guardedAcquireWith attempts to acquire the lease for the specified key
+// with [Coordination.Acquire] under a timeout, turning a panic into an
+// error, and recording the outcome via recordAcquire.
 func (hg *Herdgate) guardedAcquireWith(ctx context.Context, key string, recordAcquire func(start time.Time, acquired bool, err error)) (token string, acquired bool, err error) {
 	start := time.Now()
 	acquireCtx, cancel := context.WithTimeout(ctx, _defaultCoordinationCallTimeout)
@@ -472,9 +473,9 @@ func (hg *Herdgate) startHeartbeat(ctx context.Context, key, token string) (stop
 	}
 }
 
-// guardedRenew attempts to renew the [Coordination] lease for the
-// specified key and token under a timeout of one heartbeat interval,
-// turning a panic into an error.
+// guardedRenew attempts to renew the lease for the specified key and
+// token with [Coordination.Renew] under a timeout of one heartbeat
+// interval, turning a panic into an error.
 func (hg *Herdgate) guardedRenew(ctx context.Context, key, token string) (renewed bool, err error) {
 	start := time.Now()
 	renewCtx, cancel := context.WithTimeout(ctx, _defaultHeartbeatCallTimeout)
@@ -494,9 +495,9 @@ func (hg *Herdgate) guardedRenew(ctx context.Context, key, token string) (renewe
 	return renewed, nil
 }
 
-// guardedRelease attempts to release the Coordination lease for the
-// specified key under a timeout. A failure is logged and recorded,
-// without ever affecting [Herdgate.Do]'s caller.
+// guardedRelease attempts to release the lease for the specified key
+// with [Coordination.Release] under a timeout. A failure is logged and
+// recorded, without ever affecting [Herdgate.Do]'s caller.
 func (hg *Herdgate) guardedRelease(ctx context.Context, key, token string) {
 	start := time.Now()
 	releaseCtx, cancel := context.WithTimeout(ctx, _defaultCoordinationCallTimeout)
@@ -525,7 +526,7 @@ func (hg *Herdgate) guardedRelease(ctx context.Context, key, token string) {
 // another caller is expected to cache after winning the [Coordination]
 // lease, turning a panic into an error.
 //
-// found reports whether the value was retrieved from [Store].
+// The found result reports whether the value was retrieved from [Store].
 //
 // A non-nil error means the poll failed.
 func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout time.Duration) (value []byte, found bool, err error) {

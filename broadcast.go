@@ -25,8 +25,8 @@ type Broadcast interface {
 	// caller owns, and closes when the subscription ends. It must end
 	// after any failure that may have lost a value.
 	//
-	// unsubscribe ends this subscription without affecting other
-	// subscriptions for the same key. It is idempotent and safe for
+	// The unsubscribe function ends this subscription without affecting
+	// other subscriptions for the same key. It is idempotent and safe for
 	// concurrent use.
 	//
 	// A non-nil error means the subscribe attempt failed, in which case

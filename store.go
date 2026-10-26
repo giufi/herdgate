@@ -24,6 +24,6 @@ type Store interface {
 	//
 	// A TTL of 0 or less means the key never expires.
 	//
-	// If Set returns a non-nil error, the value may not have been stored.
+	// If Set returns a non-nil error, the value may still have been stored.
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 }
