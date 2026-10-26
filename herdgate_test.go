@@ -59,16 +59,16 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 			metrics := newMetrics()
 			hg := newHerdgate(store, metrics)
 
-			calls := 0
+			var calls atomic.Int64
 			fetch := func(ctx context.Context) ([]byte, error) {
-				calls++
+				calls.Add(1)
 				return want, nil
 			}
 
 			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: ttl}, fetch)
 			require.NoError(t, err)
 			assert.Equal(t, want, got)
-			assert.Equal(t, 1, calls)
+			assert.Equal(t, int64(1), calls.Load())
 			assert.Equal(t, []getArgs{{key: _key}}, store.getArgs())
 			assert.Equal(t, []setArgs{{key: _key, value: want, ttl: ttl}}, store.setArgs())
 			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
@@ -84,16 +84,16 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 	metrics := newMetrics()
 	hg := newHerdgate(store, metrics)
 
-	calls := 0
+	var calls atomic.Int64
 	fetch := func(ctx context.Context) ([]byte, error) {
-		calls++
+		calls.Add(1)
 		return []byte("should not be called"), nil
 	}
 
 	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
-	assert.Equal(t, 0, calls)
+	assert.Equal(t, int64(0), calls.Load())
 	assert.Equal(t, []getArgs{{key: _key}}, store.getArgs())
 	assert.Empty(t, store.setArgs())
 	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
@@ -279,9 +279,9 @@ func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
 	hg := newTestHerdgate(store)
 
 	want := []byte(_wantValue)
-	calls := 0
+	var calls atomic.Int64
 	fetch := func(context.Context) ([]byte, error) {
-		calls++
+		calls.Add(1)
 		return want, nil
 	}
 
@@ -293,7 +293,7 @@ func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, got2)
 
-	assert.Equal(t, 1, calls)
+	assert.Equal(t, int64(1), calls.Load())
 	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
 	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
 	assertHistogramObservedOnce(t, hg.metrics.fetchDuration, _testResultSuccess)
@@ -311,9 +311,9 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 	require.ErrorIs(t, err, assert.AnError)
 
 	want := []byte(_wantValue)
-	calls := 0
+	var calls atomic.Int64
 	fetchSuccess := func(context.Context) ([]byte, error) {
-		calls++
+		calls.Add(1)
 		return want, nil
 	}
 
@@ -325,7 +325,7 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 
-	assert.Equal(t, 1, calls)
+	assert.Equal(t, int64(1), calls.Load())
 	assert.InDelta(t, 2, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
 	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
 	assertHistogramObservedOnce(t, hg.metrics.fetchDuration, _testResultError)
@@ -402,9 +402,9 @@ func TestHerdgate_DoCoordinationLeader(t *testing.T) {
 		hg := newTestHerdgate(store, WithCoordination(coord))
 
 		want := []byte(_wantValue)
-		fetchCalls := 0
+		var fetchCalls atomic.Int64
 		fetch := func(ctx context.Context) ([]byte, error) {
-			fetchCalls++
+			fetchCalls.Add(1)
 			return want, nil
 		}
 
@@ -413,7 +413,7 @@ func TestHerdgate_DoCoordinationLeader(t *testing.T) {
 		synctest.Wait()
 
 		assert.Equal(t, want, got)
-		assert.Equal(t, 1, fetchCalls)
+		assert.Equal(t, int64(1), fetchCalls.Load())
 		assert.Equal(t, []acquireArgs{{key: _key, ttl: _defaultLeaseTTL}}, coord.acquireArgs())
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultAcquired)), 0)
 		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
@@ -463,16 +463,16 @@ func TestHerdgate_DoCoordinationAcquireError(t *testing.T) {
 			hg := newTestHerdgate(store, WithCoordination(coord))
 
 			want := []byte(_wantValue)
-			fetchCalls := 0
+			var fetchCalls atomic.Int64
 			fetch := func(ctx context.Context) ([]byte, error) {
-				fetchCalls++
+				fetchCalls.Add(1)
 				return want, nil
 			}
 
 			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 			require.NoError(t, err)
 			assert.Equal(t, want, got)
-			assert.Equal(t, 1, fetchCalls)
+			assert.Equal(t, int64(1), fetchCalls.Load())
 			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultError)), 0)
 		})
 	}
@@ -488,9 +488,9 @@ func TestHerdgate_DoCoordinationReleaseError(t *testing.T) {
 		hg := newTestHerdgate(store, WithCoordination(coord))
 
 		want := []byte(_wantValue)
-		fetchCalls := 0
+		var fetchCalls atomic.Int64
 		fetch := func(ctx context.Context) ([]byte, error) {
-			fetchCalls++
+			fetchCalls.Add(1)
 			return want, nil
 		}
 
@@ -499,7 +499,7 @@ func TestHerdgate_DoCoordinationReleaseError(t *testing.T) {
 		synctest.Wait()
 
 		assert.Equal(t, want, got)
-		assert.Equal(t, 1, fetchCalls)
+		assert.Equal(t, int64(1), fetchCalls.Load())
 		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRelease, _testResultError)), 0)
 	})
@@ -512,9 +512,9 @@ func TestHerdgate_DoCoordinationFollower(t *testing.T) {
 		hg := newTestHerdgate(store, WithCoordination(coord))
 
 		want := []byte(_wantValue)
-		fetchCalls := 0
+		var fetchCalls atomic.Int64
 		fetch := func(ctx context.Context) ([]byte, error) {
-			fetchCalls++
+			fetchCalls.Add(1)
 			return want, nil
 		}
 
@@ -526,7 +526,7 @@ func TestHerdgate_DoCoordinationFollower(t *testing.T) {
 		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
-		assert.Equal(t, 0, fetchCalls)
+		assert.Equal(t, int64(0), fetchCalls.Load())
 		assert.Len(t, coord.acquireArgs(), 1)
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultContended)), 0)
 		assert.Equal(t, 0, testutil.CollectAndCount(hg.metrics.cacheWrites))
@@ -540,9 +540,9 @@ func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
 		hg := newTestHerdgate(store, WithCoordination(coord))
 
 		want := []byte(_wantValue)
-		fetchCalls := 0
+		var fetchCalls atomic.Int64
 		fetch := func(ctx context.Context) ([]byte, error) {
-			fetchCalls++
+			fetchCalls.Add(1)
 			return want, nil
 		}
 
@@ -554,7 +554,7 @@ func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
 		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
-		assert.Equal(t, 0, fetchCalls)
+		assert.Equal(t, int64(0), fetchCalls.Load())
 		assert.Len(t, coord.acquireArgs(), 2)
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultContended)), 0)
 	})
@@ -575,9 +575,9 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquired(t *testing.T) {
 				hg := newTestHerdgate(store, WithCoordination(coord))
 
 				want := []byte(_wantValue)
-				fetchCalls := 0
+				var fetchCalls atomic.Int64
 				fetch := func(ctx context.Context) ([]byte, error) {
-					fetchCalls++
+					fetchCalls.Add(1)
 					return want, nil
 				}
 
@@ -589,7 +589,7 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquired(t *testing.T) {
 
 				assert.Equal(t, want, got)
 				assert.Equal(t, _electionRetryInterval, elapsed)
-				assert.Equal(t, 1, fetchCalls)
+				assert.Equal(t, int64(1), fetchCalls.Load())
 				assert.Len(t, coord.acquireArgs(), 2)
 				assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
 				assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultAcquired)), 0)
@@ -608,16 +608,16 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquireError(t *testing.T) {
 		hg := newTestHerdgate(store, WithCoordination(coord))
 
 		want := []byte(_wantValue)
-		fetchCalls := 0
+		var fetchCalls atomic.Int64
 		fetch := func(ctx context.Context) ([]byte, error) {
-			fetchCalls++
+			fetchCalls.Add(1)
 			return want, nil
 		}
 
 		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 		require.NoError(t, err)
 		assert.Equal(t, want, got)
-		assert.Equal(t, 1, fetchCalls)
+		assert.Equal(t, int64(1), fetchCalls.Load())
 		assert.Len(t, coord.acquireArgs(), 2)
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultError)), 0)
 	})
@@ -636,16 +636,16 @@ func TestHerdgate_DoCoordinationFollowerPollError(t *testing.T) {
 				hg := newTestHerdgate(store, WithCoordination(coord))
 
 				want := []byte(_wantValue)
-				fetchCalls := 0
+				var fetchCalls atomic.Int64
 				fetch := func(ctx context.Context) ([]byte, error) {
-					fetchCalls++
+					fetchCalls.Add(1)
 					return want, nil
 				}
 
 				got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
 				require.NoError(t, err)
 				assert.Equal(t, want, got)
-				assert.Equal(t, 1, fetchCalls)
+				assert.Equal(t, int64(1), fetchCalls.Load())
 				assert.Len(t, coord.acquireArgs(), 1)
 				assert.InDelta(t, 0, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultContended)), 0)
 			})
@@ -666,9 +666,9 @@ func TestHerdgate_DoCoordinationFollowerTimeout(t *testing.T) {
 				hg := newTestHerdgate(store, WithCoordination(coord))
 
 				want := []byte(_wantValue)
-				fetchCalls := 0
+				var fetchCalls atomic.Int64
 				fetch := func(ctx context.Context) ([]byte, error) {
-					fetchCalls++
+					fetchCalls.Add(1)
 					return want, nil
 				}
 
@@ -680,7 +680,7 @@ func TestHerdgate_DoCoordinationFollowerTimeout(t *testing.T) {
 
 				assert.Equal(t, want, got)
 				assert.Equal(t, _defaultFollowerTimeout, elapsed)
-				assert.Equal(t, 1, fetchCalls)
+				assert.Equal(t, int64(1), fetchCalls.Load())
 				assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
 				assert.Empty(t, coord.releaseArgs())
 			})
@@ -752,16 +752,16 @@ func TestHerdgate_DoDecodeNilCodec(t *testing.T) {
 	store := &fakeStore{}
 	hg := newTestHerdgate(store)
 
-	calls := 0
+	var calls atomic.Int64
 	fetch := func(ctx context.Context) (jsonPayload, error) {
-		calls++
+		calls.Add(1)
 		return jsonPayload{Name: _jsonPayloadName}, nil
 	}
 
 	got, err := DoDecode(t.Context(), hg, _key, DoOptions{TTL: time.Minute}, fetch)
 	require.EqualError(t, err, "herdgate: DoOptions.Codec must not be nil")
 	assert.Equal(t, jsonPayload{}, got)
-	assert.Equal(t, 0, calls)
+	assert.Equal(t, int64(0), calls.Load())
 	assert.Empty(t, store.getArgs())
 }
 
@@ -851,9 +851,9 @@ func TestHerdgate_DoDecodeSequentialCallsCacheHit(t *testing.T) {
 	codec := &fakeCodec{}
 	hg := newTestHerdgate(inmemorystore.New())
 
-	calls := 0
+	var calls atomic.Int64
 	fetch := func(ctx context.Context) (jsonPayload, error) {
-		calls++
+		calls.Add(1)
 		return want, nil
 	}
 	opts := DoOptions{TTL: time.Minute, Codec: codec}
@@ -866,7 +866,7 @@ func TestHerdgate_DoDecodeSequentialCallsCacheHit(t *testing.T) {
 	require.NoError(t, err)
 	assert.Equal(t, want, got)
 
-	assert.Equal(t, 1, calls)
+	assert.Equal(t, int64(1), calls.Load())
 	assert.Equal(t, int64(1), codec.marshalCount.Load())
 	assert.Equal(t, int64(2), codec.unmarshalCount.Load())
 }
@@ -886,9 +886,9 @@ func TestHerdgate_DoAfterClose(t *testing.T) {
 			hg := newTestHerdgate(tc.store)
 			require.NoError(t, hg.Close(t.Context()))
 
-			fetchCalls := 0
+			var fetchCalls atomic.Int64
 			fetch := func(context.Context) ([]byte, error) {
-				fetchCalls++
+				fetchCalls.Add(1)
 				return nil, nil
 			}
 
@@ -899,7 +899,7 @@ func TestHerdgate_DoAfterClose(t *testing.T) {
 				require.NoError(t, err)
 			}
 			assert.Equal(t, tc.wantVal, got)
-			assert.Equal(t, 0, fetchCalls)
+			assert.Equal(t, int64(0), fetchCalls.Load())
 			assert.Equal(t, []getArgs{{key: _key}}, tc.store.getArgs())
 		})
 	}
