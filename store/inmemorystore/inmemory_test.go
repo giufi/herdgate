@@ -22,11 +22,13 @@ func TestStore_NewIsolated(t *testing.T) {
 	s2 := New()
 	require.NoError(t, s1.Set(t.Context(), _key, want, _noTTL))
 
-	got, ok := s1.Get(t.Context(), _key)
+	got, ok, err := s1.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, want, got)
 
-	got, ok = s2.Get(t.Context(), _key)
+	got, ok, err = s2.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Nil(t, got)
 }
@@ -37,7 +39,8 @@ func TestStore_GetMiss(t *testing.T) {
 	s := New()
 	require.NoError(t, s.Set(t.Context(), otherKey, []byte("foo"), _noTTL))
 
-	got, ok := s.Get(t.Context(), _key)
+	got, ok, err := s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Nil(t, got)
 }
@@ -46,7 +49,8 @@ func TestStore_GetTypeMismatch(t *testing.T) {
 	s := New()
 	s.entries.m.Store(_key, "not a storeEntry")
 
-	got, ok := s.Get(t.Context(), _key)
+	got, ok, err := s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.False(t, ok)
 	assert.Nil(t, got)
 }
@@ -65,7 +69,8 @@ func TestStore_GetHit(t *testing.T) {
 
 	for k, want := range testCases {
 		t.Run(k, func(t *testing.T) {
-			got, ok := s.Get(t.Context(), k)
+			got, ok, err := s.Get(t.Context(), k)
+			require.NoError(t, err)
 			require.True(t, ok)
 			assert.Equal(t, want, got)
 		})
@@ -93,7 +98,8 @@ func TestStore_GetTTL(t *testing.T) {
 				require.NoError(t, s.Set(t.Context(), _key, want, tc.ttl))
 				time.Sleep(tc.delay)
 
-				got, ok := s.Get(t.Context(), _key)
+				got, ok, err := s.Get(t.Context(), _key)
+				require.NoError(t, err)
 				assert.Equal(t, tc.wantHit, ok)
 				if tc.wantHit {
 					assert.Equal(t, want, got)
@@ -114,13 +120,15 @@ func TestStore_SetValueOverwrite(t *testing.T) {
 	s := New()
 	require.NoError(t, s.Set(t.Context(), _key, original, _noTTL))
 
-	got, ok := s.Get(t.Context(), _key)
+	got, ok, err := s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, original, got)
 
 	require.NoError(t, s.Set(t.Context(), _key, want, _noTTL))
 
-	got, ok = s.Get(t.Context(), _key)
+	got, ok, err = s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, want, got)
 }
@@ -129,7 +137,8 @@ func TestStore_SetNilValue(t *testing.T) {
 	s := New()
 	require.NoError(t, s.Set(t.Context(), _key, nil, _noTTL))
 
-	got, ok := s.Get(t.Context(), _key)
+	got, ok, err := s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Equal(t, []byte{}, got)
 }
@@ -185,11 +194,13 @@ func TestStore_GetIndependentCopy(t *testing.T) {
 	s := New()
 	require.NoError(t, s.Set(t.Context(), _key, []byte("foo"), _noTTL))
 
-	got, ok := s.Get(t.Context(), _key)
+	got, ok, err := s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	require.True(t, ok)
 	got[0] = 'X'
 
-	got, ok = s.Get(t.Context(), _key)
+	got, ok, err = s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, []byte("foo"), got)
 }
@@ -201,22 +212,25 @@ func TestStore_SetIndependentCopy(t *testing.T) {
 	require.NoError(t, s.Set(t.Context(), _key, original, _noTTL))
 	original[0] = 'X'
 
-	got, ok := s.Get(t.Context(), _key)
+	got, ok, err := s.Get(t.Context(), _key)
+	require.NoError(t, err)
 	assert.True(t, ok)
 	assert.Equal(t, []byte("foo"), got)
 }
 
-// This test relies on go test -race to catch data races.
 func TestStore_ConcurrentAccess(t *testing.T) {
 	s := New()
-
 	const callers = 50
+	want := []byte("foo")
 	var wg sync.WaitGroup
-	errs := make(chan error, callers)
+	errs := make(chan error, 2*callers)
 	for range callers {
 		wg.Go(func() {
-			errs <- s.Set(t.Context(), _key, []byte("value"), _noTTL)
-			s.Get(t.Context(), _key)
+			errs <- s.Set(t.Context(), _key, want, _noTTL)
+			got, ok, err := s.Get(t.Context(), _key)
+			errs <- err
+			assert.True(t, ok)
+			assert.Equal(t, want, got)
 		})
 	}
 	wg.Wait()

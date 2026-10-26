@@ -206,10 +206,10 @@ func (hg *Herdgate) Close(ctx context.Context) error {
 	}
 }
 
-// guardedStoreGet attempts to read the stored value for the key, turning a
-// panic into a miss.
+// guardedStoreGet attempts to read the stored value for the key with
+// [Store.Get], turning an error or a panic into a miss.
 //
-// Caching is best-effort on lookups: a Store that panics degrades Do to
+// Caching is best-effort on lookups: a Store that fails degrades Do to
 // an uncached fetch instead of failing it.
 func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []byte, found bool) {
 	defer func() {
@@ -221,11 +221,22 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 		}
 	}()
 
-	value, found = hg.store.Get(ctx, key)
-	if found {
+	value, found, err := hg.store.Get(ctx, key)
+	switch {
+	case err != nil && ctx.Err() != nil: // ctx canceled or expired
+		hg.metrics.incrementCacheMiss()
+		_logger.Debug(ctx, "Context done during cache lookup, treating it as a miss",
+			slog.String("key", key), slog.Any("error", err))
+		return nil, false
+	case err != nil:
+		hg.metrics.incrementCacheLookupError()
+		_logger.Error(ctx, "Cache lookup failed, treating it as a miss",
+			slog.String("key", key), slog.Any("error", err))
+		return nil, false
+	case found:
 		hg.metrics.incrementCacheHit()
 		_logger.Debug(ctx, "Cache hit", slog.String("key", key))
-	} else {
+	default:
 		hg.metrics.incrementCacheMiss()
 		_logger.Debug(ctx, "Cache miss", slog.String("key", key))
 	}
@@ -315,8 +326,8 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 //   - Lost (contended by another caller): wait for the lease holder to
 //     cache the value, polling [Store] for it every _followerPollInterval
 //     and, after each _electionRetryInterval of polling, retrying the
-//     acquisition in case the holder stopped renewing. If a [Store.Get]
-//     call fails, or no value is cached within about _defaultFollowerTimeout,
+//     acquisition in case the holder stopped renewing. If [Store] polling
+//     fails, or no value is cached within about _defaultFollowerTimeout,
 //     bypass Coordination.
 //   - Acquisition failed (error or panic): bypass Coordination. If the
 //     failure was due to a timeout, the lease may still have been
@@ -527,8 +538,9 @@ func (hg *Herdgate) guardedRelease(ctx context.Context, key, token string) {
 // lease, turning a panic into an error.
 //
 // The found result reports whether the value was retrieved from [Store].
-//
-// A non-nil error means the poll failed.
+// False with a nil error means no value was found before ctx was done or
+// the timeout elapsed.
+// False with a non-nil error means the poll failed.
 func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout time.Duration) (value []byte, found bool, err error) {
 	pollCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -546,7 +558,13 @@ func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout ti
 	for {
 		select {
 		case <-ticker.C:
-			if value, found := hg.store.Get(pollCtx, key); found {
+			value, found, err = hg.store.Get(pollCtx, key)
+			switch {
+			case err != nil && pollCtx.Err() != nil: // pollCtx canceled or expired
+				return nil, false, nil
+			case err != nil:
+				return nil, false, err
+			case found:
 				return value, true, nil
 			}
 		case <-pollCtx.Done():

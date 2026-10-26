@@ -37,19 +37,22 @@ func New() *Store {
 	return &Store{}
 }
 
-// Get returns the value stored for the given key, and reports whether it was found.
+// Get returns the value stored for the given key.
 //
-// An elapsed TTL is treated the same as a missing key.
-func (s *Store) Get(ctx context.Context, key string) ([]byte, bool) {
+// The found result reports whether the key was found. False means the key
+// is missing or its TTL has elapsed.
+//
+// The returned error is always nil.
+func (s *Store) Get(ctx context.Context, key string) (value []byte, found bool, err error) {
 	entry, ok := s.entries.Load(ctx, key)
 	if !ok {
-		return nil, false
+		return nil, false, nil
 	}
 	if !entry.expiresAt.IsZero() && time.Now().After(entry.expiresAt) {
 		_logger.Debug(ctx, "Cache entry expired", slog.String("key", key))
-		return nil, false
+		return nil, false, nil
 	}
-	return bytes.Clone(entry.value), true
+	return bytes.Clone(entry.value), true, nil
 }
 
 // Set stores the value for the given key, replacing any existing value.

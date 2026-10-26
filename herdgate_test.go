@@ -35,6 +35,9 @@ const (
 	_successTestCase = "success"
 	_errorTestCase   = "error"
 	_panicTestCase   = "panic"
+
+	_pollMissTestCase = "poll miss"
+	_pollHangTestCase = "poll hang"
 )
 
 func TestMain(m *testing.M) {
@@ -77,7 +80,7 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 
 func TestHerdgate_DoCacheHit(t *testing.T) {
 	want := []byte("cached")
-	store := &fakeStore{getValue: want, getFound: true}
+	store := &fakeStore{getResults: []getResult{{value: want, found: true}}}
 	metrics := newMetrics()
 	hg := newHerdgate(store, metrics)
 
@@ -98,22 +101,55 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 	assert.Equal(t, 0, testutil.CollectAndCount(metrics.fetchDuration))
 }
 
-func TestHerdgate_DoStoreGetPanic(t *testing.T) {
-	want := []byte(_wantValue)
-	store := &fakeStore{getPanic: assert.AnError}
-	metrics := newMetrics()
-	hg := newHerdgate(store, metrics)
-
-	fetch := func(ctx context.Context) ([]byte, error) {
-		return want, nil
+func TestHerdgate_DoStoreGetError(t *testing.T) {
+	testCases := map[string]*fakeStore{
+		_errorTestCase:                      {getResults: []getResult{{err: assert.AnError}}},
+		"error and unexpected cached value": {getResults: []getResult{{value: []byte("cached"), found: true, err: assert.AnError}}},
+		_panicTestCase:                      {getPanic: assert.AnError},
 	}
 
-	got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-	require.NoError(t, err)
-	assert.Equal(t, want, got)
-	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+	for name, store := range testCases {
+		t.Run(name, func(t *testing.T) {
+			want := []byte(_wantValue)
+			metrics := newMetrics()
+			hg := newHerdgate(store, metrics)
+
+			fetch := func(ctx context.Context) ([]byte, error) {
+				return want, nil
+			}
+
+			got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+			require.NoError(t, err)
+			assert.Equal(t, want, got)
+			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
+			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
+			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+		})
+	}
+}
+
+func TestHerdgate_GuardedStoreGetContextCanceled(t *testing.T) {
+	testCases := map[string]struct {
+		store      *fakeStore
+		wantResult string
+	}{
+		_errorTestCase: {store: &fakeStore{getResults: []getResult{{err: assert.AnError}}}, wantResult: _testResultLookupMiss},
+		_panicTestCase: {store: &fakeStore{getPanic: assert.AnError}, wantResult: _testResultLookupError},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			hg := newTestHerdgate(tc.store)
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			value, found := hg.guardedStoreGet(ctx, _key)
+			assert.Nil(t, value)
+			assert.False(t, found)
+			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(tc.wantResult)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.cacheLookups))
+		})
+	}
 }
 
 func TestHerdgate_DoFetchError(t *testing.T) {
@@ -188,7 +224,7 @@ func TestHerdgate_DoFetchNilValue(t *testing.T) {
 
 func TestHerdgate_DoStoreSetError(t *testing.T) {
 	testCases := map[string]*fakeStore{
-		_errorTestCase: {setErr: assert.AnError},
+		_errorTestCase: {setResults: []setResult{{err: assert.AnError}}},
 		_panicTestCase: {setPanic: assert.AnError},
 	}
 
@@ -525,30 +561,42 @@ func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
 }
 
 func TestHerdgate_DoCoordinationFollowerRetryAcquired(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		store := &fakeStore{}
-		coord := &fakeCoordination{
-			acquireResults: []acquireResult{{acquired: false}, {token: _token, acquired: true}},
-		}
-		hg := newTestHerdgate(store, WithCoordination(coord))
+	testCases := map[string]*fakeStore{
+		_pollMissTestCase: {},
+		_pollHangTestCase: {getResults: []getResult{{}, {hang: true}}},
+	}
 
-		want := []byte(_wantValue)
-		fetchCalls := 0
-		fetch := func(ctx context.Context) ([]byte, error) {
-			fetchCalls++
-			return want, nil
-		}
+	for name, store := range testCases {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				coord := &fakeCoordination{
+					acquireResults: []acquireResult{{acquired: false}, {token: _token, acquired: true}},
+				}
+				hg := newTestHerdgate(store, WithCoordination(coord))
 
-		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-		require.NoError(t, err)
-		synctest.Wait()
+				want := []byte(_wantValue)
+				fetchCalls := 0
+				fetch := func(ctx context.Context) ([]byte, error) {
+					fetchCalls++
+					return want, nil
+				}
 
-		assert.Equal(t, want, got)
-		assert.Equal(t, 1, fetchCalls)
-		assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
-		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultAcquired)), 0)
-		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
-	})
+				start := time.Now()
+				got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+				require.NoError(t, err)
+				elapsed := time.Since(start)
+				synctest.Wait()
+
+				assert.Equal(t, want, got)
+				assert.Equal(t, _electionRetryInterval, elapsed)
+				assert.Equal(t, 1, fetchCalls)
+				assert.Len(t, coord.acquireArgs(), 2)
+				assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
+				assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultAcquired)), 0)
+				assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+			})
+		})
+	}
 }
 
 func TestHerdgate_DoCoordinationFollowerRetryAcquireError(t *testing.T) {
@@ -575,26 +623,69 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquireError(t *testing.T) {
 	})
 }
 
-func TestHerdgate_DoCoordinationFollowerPollPanic(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		store := &fakeStore{getPanic: assert.AnError}
-		coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
-		hg := newTestHerdgate(store, WithCoordination(coord))
+func TestHerdgate_DoCoordinationFollowerPollError(t *testing.T) {
+	testCases := map[string]*fakeStore{
+		_errorTestCase: {getResults: []getResult{{err: assert.AnError}}},
+		_panicTestCase: {getPanic: assert.AnError},
+	}
 
-		want := []byte(_wantValue)
-		fetchCalls := 0
-		fetch := func(ctx context.Context) ([]byte, error) {
-			fetchCalls++
-			return want, nil
-		}
+	for name, store := range testCases {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
+				hg := newTestHerdgate(store, WithCoordination(coord))
 
-		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
-		require.NoError(t, err)
-		assert.Equal(t, want, got)
-		assert.Equal(t, 1, fetchCalls)
-		assert.Len(t, coord.acquireArgs(), 1)
-		assert.InDelta(t, 0, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultContended)), 0)
-	})
+				want := []byte(_wantValue)
+				fetchCalls := 0
+				fetch := func(ctx context.Context) ([]byte, error) {
+					fetchCalls++
+					return want, nil
+				}
+
+				got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+				require.NoError(t, err)
+				assert.Equal(t, want, got)
+				assert.Equal(t, 1, fetchCalls)
+				assert.Len(t, coord.acquireArgs(), 1)
+				assert.InDelta(t, 0, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultContended)), 0)
+			})
+		})
+	}
+}
+
+func TestHerdgate_DoCoordinationFollowerTimeout(t *testing.T) {
+	testCases := map[string]*fakeStore{
+		_pollMissTestCase: {},
+		_pollHangTestCase: {getResults: []getResult{{}, {hang: true}}},
+	}
+
+	for name, store := range testCases {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				coord := &fakeCoordination{acquireResults: []acquireResult{{acquired: false}}}
+				hg := newTestHerdgate(store, WithCoordination(coord))
+
+				want := []byte(_wantValue)
+				fetchCalls := 0
+				fetch := func(ctx context.Context) ([]byte, error) {
+					fetchCalls++
+					return want, nil
+				}
+
+				start := time.Now()
+				got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+				require.NoError(t, err)
+				elapsed := time.Since(start)
+				synctest.Wait()
+
+				assert.Equal(t, want, got)
+				assert.Equal(t, _defaultFollowerTimeout, elapsed)
+				assert.Equal(t, 1, fetchCalls)
+				assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
+				assert.Empty(t, coord.releaseArgs())
+			})
+		})
+	}
 }
 
 func TestHerdgate_DoCoordinationConcurrentCallsAcrossInstancesCoalesced(t *testing.T) {
@@ -726,7 +817,7 @@ func TestHerdgate_DoDecodeMarshalPanic(t *testing.T) {
 
 func TestHerdgate_DoDecodeUnmarshalError(t *testing.T) {
 	codecErr := errors.New(_errorMsg)
-	store := &fakeStore{getValue: []byte(`{"name":"foo"}`), getFound: true}
+	store := &fakeStore{getResults: []getResult{{value: []byte(`{"name":"foo"}`), found: true}}}
 	hg := newTestHerdgate(store)
 	codec := &fakeCodec{unmarshalErr: codecErr}
 
@@ -741,7 +832,7 @@ func TestHerdgate_DoDecodeUnmarshalError(t *testing.T) {
 }
 
 func TestHerdgate_DoDecodeUnmarshalPanic(t *testing.T) {
-	store := &fakeStore{getValue: []byte(`{"name":"foo"}`), getFound: true}
+	store := &fakeStore{getResults: []getResult{{value: []byte(`{"name":"foo"}`), found: true}}}
 	hg := newTestHerdgate(store)
 	codec := &fakeCodec{unmarshalPanic: _panicValue}
 
@@ -786,7 +877,7 @@ func TestHerdgate_DoAfterClose(t *testing.T) {
 		wantVal []byte
 		wantErr error
 	}{
-		"cache hit":  {store: &fakeStore{getValue: []byte(_wantValue), getFound: true}, wantVal: []byte(_wantValue)},
+		"cache hit":  {store: &fakeStore{getResults: []getResult{{value: []byte(_wantValue), found: true}}}, wantVal: []byte(_wantValue)},
 		"cache miss": {store: &fakeStore{}, wantErr: ErrClosed},
 	}
 
@@ -1157,16 +1248,18 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 	testCases := map[string]struct {
 		parentTimeout time.Duration
 		timeout       time.Duration
+		pollHang      bool
 		wantElapsed   time.Duration
 	}{
 		"no parent deadline":                   {parentTimeout: 0, timeout: 150 * time.Millisecond, wantElapsed: 150 * time.Millisecond},
 		"parent deadline shorter than timeout": {parentTimeout: 150 * time.Millisecond, timeout: time.Minute, wantElapsed: 150 * time.Millisecond},
+		_pollHangTestCase:                      {parentTimeout: 0, timeout: 150 * time.Millisecond, pollHang: true, wantElapsed: 150 * time.Millisecond},
 	}
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				store := &fakeStore{getFound: false}
+				store := &fakeStore{getResults: []getResult{{hang: tc.pollHang}}}
 				hg := newTestHerdgate(store)
 
 				ctx := t.Context()
@@ -1187,16 +1280,24 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 	}
 }
 
-func TestHerdgate_AwaitLeaderValueStorePanic(t *testing.T) {
-	synctest.Test(t, func(t *testing.T) {
-		store := &fakeStore{getPanic: assert.AnError}
-		hg := newTestHerdgate(store)
+func TestHerdgate_AwaitLeaderValueStoreError(t *testing.T) {
+	testCases := map[string]*fakeStore{
+		_errorTestCase: {getResults: []getResult{{err: assert.AnError}}},
+		_panicTestCase: {getPanic: assert.AnError},
+	}
 
-		value, found, err := hg.awaitLeaderValue(t.Context(), _key, 250*time.Millisecond)
-		require.Error(t, err)
-		assert.False(t, found)
-		assert.Nil(t, value)
-	})
+	for name, store := range testCases {
+		t.Run(name, func(t *testing.T) {
+			synctest.Test(t, func(t *testing.T) {
+				hg := newTestHerdgate(store)
+
+				value, found, err := hg.awaitLeaderValue(t.Context(), _key, 250*time.Millisecond)
+				require.ErrorIs(t, err, assert.AnError)
+				assert.False(t, found)
+				assert.Nil(t, value)
+			})
+		})
+	}
 }
 
 func newTestHerdgate(store Store, opts ...HerdgateOption) *Herdgate {

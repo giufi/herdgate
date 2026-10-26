@@ -18,11 +18,20 @@ type setArgs struct {
 	ttl   time.Duration
 }
 
-type fakeStore struct {
-	getValue []byte
-	getFound bool
+type getResult struct {
+	value []byte
+	found bool
+	err   error
+	hang  bool // if true, Get blocks until ctx is canceled, then returns (nil, false, ctx.Err())
+}
 
-	setErr error
+type setResult struct {
+	err error
+}
+
+type fakeStore struct {
+	getResults []getResult // one entry per Get call, subsequent calls repeat the last one. If empty, Get reports a miss
+	setResults []setResult // one entry per Set call, subsequent calls repeat the last one. If empty, Set succeeds
 
 	getPanic any
 	setPanic any
@@ -36,16 +45,26 @@ type fakeStore struct {
 
 var _ Store = (*fakeStore)(nil)
 
-func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool) {
+func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	f.guarded.mu.Lock()
 	f.guarded.getArgs = append(f.guarded.getArgs, getArgs{key: key})
+	callIndex := len(f.guarded.getArgs) - 1
 	f.guarded.mu.Unlock()
 
 	if f.getPanic != nil {
 		panic(f.getPanic)
 	}
 
-	return bytes.Clone(f.getValue), f.getFound
+	if len(f.getResults) == 0 {
+		return nil, false, nil
+	}
+	resultIndex := min(callIndex, len(f.getResults)-1)
+	result := f.getResults[resultIndex]
+	if result.hang {
+		<-ctx.Done()
+		return nil, false, ctx.Err()
+	}
+	return bytes.Clone(result.value), result.found, result.err
 }
 
 func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
@@ -53,12 +72,18 @@ func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.
 
 	f.guarded.mu.Lock()
 	f.guarded.setArgs = append(f.guarded.setArgs, args)
+	callIndex := len(f.guarded.setArgs) - 1
 	f.guarded.mu.Unlock()
 
 	if f.setPanic != nil {
 		panic(f.setPanic)
 	}
-	return f.setErr
+
+	if len(f.setResults) == 0 {
+		return nil
+	}
+	resultIndex := min(callIndex, len(f.setResults)-1)
+	return f.setResults[resultIndex].err
 }
 
 func (f *fakeStore) getArgs() []getArgs {

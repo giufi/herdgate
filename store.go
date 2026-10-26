@@ -9,12 +9,15 @@ import (
 //
 // A Store must be safe for concurrent use by multiple goroutines.
 type Store interface {
-	// Get returns the value stored for the given key, and reports whether it was found.
+	// Get returns the value stored for the given key.
 	//
 	// Modifying the returned value must not affect the Store or any value returned by another call.
 	//
-	// An elapsed TTL is treated the same as a missing key.
-	Get(ctx context.Context, key string) ([]byte, bool)
+	// The found result reports whether the key was found.
+	// False with a nil error means the key is missing or its TTL has elapsed,
+	// which is expected behavior.
+	// False with a non-nil error means the lookup attempt failed.
+	Get(ctx context.Context, key string) (value []byte, found bool, err error)
 
 	// Set stores the value for the given key, replacing any existing value.
 	//
