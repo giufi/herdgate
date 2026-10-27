@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	_testResultLookupHit   = "hit"
-	_testResultLookupMiss  = "miss"
-	_testResultLookupError = "error"
+	_testResultLookupHit         = "hit"
+	_testResultLookupMiss        = "miss"
+	_testResultLookupError       = "error"
+	_testResultLookupContextDone = "context_done"
 
 	_testResultSuccess = "success"
 	_testResultError   = "error"
@@ -36,8 +37,7 @@ func TestMetrics_IncrementCacheHit(t *testing.T) {
 
 	m.incrementCacheHit()
 	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(m.cacheLookups))
 }
 
 func TestMetrics_IncrementCacheMiss(t *testing.T) {
@@ -45,8 +45,7 @@ func TestMetrics_IncrementCacheMiss(t *testing.T) {
 
 	m.incrementCacheMiss()
 	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(m.cacheLookups))
 }
 
 func TestMetrics_IncrementCacheLookupError(t *testing.T) {
@@ -54,8 +53,15 @@ func TestMetrics_IncrementCacheLookupError(t *testing.T) {
 
 	m.incrementCacheLookupError()
 	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(m.cacheLookups))
+}
+
+func TestMetrics_IncrementCacheLookupContextDone(t *testing.T) {
+	m := newMetrics()
+
+	m.incrementCacheLookupContextDone()
+	assert.InDelta(t, 1, testutil.ToFloat64(m.cacheLookups.WithLabelValues(_testResultLookupContextDone)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(m.cacheLookups))
 }
 
 func TestMetrics_RecordCacheWrite(t *testing.T) {
@@ -73,6 +79,7 @@ func TestMetrics_RecordCacheWrite(t *testing.T) {
 
 			m.recordCacheWrite(tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.cacheWrites.WithLabelValues(tc.wantResult)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(m.cacheWrites))
 		})
 	}
 }
@@ -95,6 +102,8 @@ func TestMetrics_RecordCoordinationAcquire(t *testing.T) {
 			m.recordCoordinationAcquire(time.Now(), tc.acquired, tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationAcquire, tc.wantResult)), 0)
 			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationAcquire, tc.wantResult)
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationOps))
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationDuration))
 		})
 	}
 }
@@ -117,6 +126,8 @@ func TestMetrics_RecordCoordinationAcquireRetry(t *testing.T) {
 			m.recordCoordinationAcquireRetry(time.Now(), tc.acquired, tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationAcquireRetry, tc.wantResult)), 0)
 			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationAcquireRetry, tc.wantResult)
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationOps))
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationDuration))
 		})
 	}
 }
@@ -139,6 +150,8 @@ func TestMetrics_RecordCoordinationRenew(t *testing.T) {
 			m.recordCoordinationRenew(time.Now(), tc.renewed, tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationRenew, tc.wantResult)), 0)
 			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationRenew, tc.wantResult)
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationOps))
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationDuration))
 		})
 	}
 }
@@ -159,6 +172,8 @@ func TestMetrics_RecordCoordinationRelease(t *testing.T) {
 			m.recordCoordinationRelease(time.Now(), tc.err)
 			assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationRelease, tc.wantResult)), 0)
 			assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationRelease, tc.wantResult)
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationOps))
+			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationDuration))
 		})
 	}
 }
@@ -178,6 +193,7 @@ func TestMetrics_ObserveFetch(t *testing.T) {
 
 			m.observeFetch(time.Now(), tc.err)
 			assertHistogramObservedOnce(t, m.fetchDuration, tc.wantResult)
+			assert.Equal(t, 1, testutil.CollectAndCount(m.fetchDuration))
 		})
 	}
 }

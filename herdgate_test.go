@@ -72,8 +72,9 @@ func TestHerdgate_DoCacheMiss(t *testing.T) {
 			assert.Equal(t, []getArgs{{key: _key}}, store.getArgs())
 			assert.Equal(t, []setArgs{{key: _key, value: want, ttl: ttl}}, store.setArgs())
 			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
-			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(metrics.cacheLookups))
 			assertHistogramObservedOnce(t, metrics.fetchDuration, _testResultSuccess)
+			assert.Equal(t, 1, testutil.CollectAndCount(metrics.fetchDuration))
 		})
 	}
 }
@@ -97,7 +98,7 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 	assert.Equal(t, []getArgs{{key: _key}}, store.getArgs())
 	assert.Empty(t, store.setArgs())
 	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
-	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(metrics.cacheLookups))
 	assert.Equal(t, 0, testutil.CollectAndCount(metrics.fetchDuration))
 }
 
@@ -122,10 +123,30 @@ func TestHerdgate_DoStoreGetError(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, want, got)
 			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
-			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
-			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(metrics.cacheLookups))
 		})
 	}
+}
+
+func TestHerdgate_DoStoreGetTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{getResults: []getResult{{hang: true}}}
+		metrics := newMetrics()
+		hg := newHerdgate(store, metrics)
+
+		want := []byte(_wantValue)
+		fetch := func(ctx context.Context) ([]byte, error) {
+			return want, nil
+		}
+
+		start := time.Now()
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, _defaultStoreCallTimeout, time.Since(start))
+		assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupError)), 0)
+		assert.Equal(t, 1, testutil.CollectAndCount(metrics.cacheLookups))
+	})
 }
 
 func TestHerdgate_GuardedStoreGetContextCanceled(t *testing.T) {
@@ -133,8 +154,9 @@ func TestHerdgate_GuardedStoreGetContextCanceled(t *testing.T) {
 		store      *fakeStore
 		wantResult string
 	}{
-		_errorTestCase: {store: &fakeStore{getResults: []getResult{{err: assert.AnError}}}, wantResult: _testResultLookupMiss},
-		_panicTestCase: {store: &fakeStore{getPanic: assert.AnError}, wantResult: _testResultLookupError},
+		"ctx error":       {store: &fakeStore{getResults: []getResult{{hang: true}}}, wantResult: _testResultLookupContextDone},
+		"any other error": {store: &fakeStore{getResults: []getResult{{err: assert.AnError}}}, wantResult: _testResultLookupError},
+		_panicTestCase:    {store: &fakeStore{getPanic: assert.AnError}, wantResult: _testResultLookupError},
 	}
 
 	for name, tc := range testCases {
@@ -167,9 +189,10 @@ func TestHerdgate_DoFetchError(t *testing.T) {
 	assert.Nil(t, got)
 	assert.Equal(t, []getArgs{{key: _key}}, store.getArgs())
 	assert.Empty(t, store.setArgs())
-	assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
 	assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
+	assert.Equal(t, 1, testutil.CollectAndCount(metrics.cacheLookups))
 	assertHistogramObservedOnce(t, metrics.fetchDuration, _testResultError)
+	assert.Equal(t, 1, testutil.CollectAndCount(metrics.fetchDuration))
 }
 
 func TestHerdgate_DoFetchPanic(t *testing.T) {
@@ -204,6 +227,7 @@ func TestHerdgate_DoFetchPanic(t *testing.T) {
 			assert.Nil(t, got)
 			assert.Empty(t, store.setArgs())
 			assertHistogramObservedOnce(t, metrics.fetchDuration, _testResultError)
+			assert.Equal(t, 1, testutil.CollectAndCount(metrics.fetchDuration))
 		})
 	}
 }
@@ -242,9 +266,30 @@ func TestHerdgate_DoStoreSetError(t *testing.T) {
 			require.NoError(t, err)
 			assert.Equal(t, want, got)
 			assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues(_testResultError)), 0)
-			assert.InDelta(t, 0, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues(_testResultSuccess)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(metrics.cacheWrites))
 		})
 	}
+}
+
+func TestHerdgate_DoStoreSetTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		store := &fakeStore{setResults: []setResult{{hang: true}}}
+		metrics := newMetrics()
+		hg := newHerdgate(store, metrics)
+
+		want := []byte(_wantValue)
+		fetch := func(ctx context.Context) ([]byte, error) {
+			return want, nil
+		}
+
+		start := time.Now()
+		got, err := hg.Do(t.Context(), _key, DoOptions{TTL: time.Minute}, fetch)
+		require.NoError(t, err)
+		assert.Equal(t, want, got)
+		assert.Equal(t, _defaultStoreCallTimeout, time.Since(start))
+		assert.InDelta(t, 1, testutil.ToFloat64(metrics.cacheWrites.WithLabelValues(_testResultError)), 0)
+		assert.Equal(t, 1, testutil.CollectAndCount(metrics.cacheWrites))
+	})
 }
 
 func TestHerdgate_DoContextCanceled(t *testing.T) {
@@ -296,7 +341,9 @@ func TestHerdgate_DoSequentialCallsCacheHit(t *testing.T) {
 	assert.Equal(t, int64(1), calls.Load())
 	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
 	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
+	assert.Equal(t, 2, testutil.CollectAndCount(hg.metrics.cacheLookups))
 	assertHistogramObservedOnce(t, hg.metrics.fetchDuration, _testResultSuccess)
+	assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.fetchDuration))
 }
 
 func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
@@ -328,8 +375,10 @@ func TestHerdgate_DoFetchErrorThenCacheMiss(t *testing.T) {
 	assert.Equal(t, int64(1), calls.Load())
 	assert.InDelta(t, 2, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupMiss)), 0)
 	assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.cacheLookups.WithLabelValues(_testResultLookupHit)), 0)
+	assert.Equal(t, 2, testutil.CollectAndCount(hg.metrics.cacheLookups))
 	assertHistogramObservedOnce(t, hg.metrics.fetchDuration, _testResultError)
 	assertHistogramObservedOnce(t, hg.metrics.fetchDuration, _testResultSuccess)
+	assert.Equal(t, 2, testutil.CollectAndCount(hg.metrics.fetchDuration))
 }
 
 func TestHerdgate_DoConcurrentCallsCoalesced(t *testing.T) {
@@ -1220,6 +1269,7 @@ func TestHerdgate_GuardedRenewMetrics(t *testing.T) {
 
 			_, _ = hg.guardedRenew(t.Context(), _key, _token)
 			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRenew, tc.wantResult)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
 		})
 	}
 }
@@ -1240,6 +1290,7 @@ func TestHerdgate_GuardedReleaseMetrics(t *testing.T) {
 
 			hg.guardedRelease(t.Context(), _key, _token)
 			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRelease, tc.wantResult)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
 		})
 	}
 }
@@ -1282,8 +1333,9 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 
 func TestHerdgate_AwaitLeaderValueStoreError(t *testing.T) {
 	testCases := map[string]*fakeStore{
-		_errorTestCase: {getResults: []getResult{{err: assert.AnError}}},
-		_panicTestCase: {getPanic: assert.AnError},
+		_errorTestCase:    {getResults: []getResult{{err: assert.AnError}}},
+		"hang then error": {getResults: []getResult{{hang: true, err: assert.AnError}}},
+		_panicTestCase:    {getPanic: assert.AnError},
 	}
 
 	for name, store := range testCases {

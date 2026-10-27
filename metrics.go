@@ -24,9 +24,10 @@ const (
 	_labelResult    = "result"
 	_labelOperation = "operation"
 
-	_resultLookupHit   = "hit"
-	_resultLookupMiss  = "miss"
-	_resultLookupError = "error"
+	_resultLookupHit         = "hit"
+	_resultLookupMiss        = "miss"
+	_resultLookupError       = "error"
+	_resultLookupContextDone = "context_done"
 
 	_resultSuccess = "success"
 	_resultError   = "error"
@@ -82,6 +83,10 @@ func (m *metrics) incrementCacheMiss() {
 
 func (m *metrics) incrementCacheLookupError() {
 	m.cacheLookups.WithLabelValues(_resultLookupError).Inc()
+}
+
+func (m *metrics) incrementCacheLookupContextDone() {
+	m.cacheLookups.WithLabelValues(_resultLookupContextDone).Inc()
 }
 
 func (m *metrics) recordCacheWrite(err error) {

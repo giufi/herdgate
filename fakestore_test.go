@@ -22,11 +22,12 @@ type getResult struct {
 	value []byte
 	found bool
 	err   error
-	hang  bool // if true, Get blocks until ctx is canceled, then returns (nil, false, ctx.Err())
+	hang  bool // if true, Get blocks until ctx is canceled, then returns (nil, false, err), or ctx.Err() if err is nil
 }
 
 type setResult struct {
-	err error
+	err  error
+	hang bool // if true, Set blocks until ctx is canceled, then returns ctx.Err()
 }
 
 type fakeStore struct {
@@ -62,6 +63,9 @@ func (f *fakeStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	result := f.getResults[resultIndex]
 	if result.hang {
 		<-ctx.Done()
+		if result.err != nil {
+			return nil, false, result.err
+		}
 		return nil, false, ctx.Err()
 	}
 	return bytes.Clone(result.value), result.found, result.err
@@ -83,7 +87,12 @@ func (f *fakeStore) Set(ctx context.Context, key string, value []byte, ttl time.
 		return nil
 	}
 	resultIndex := min(callIndex, len(f.setResults)-1)
-	return f.setResults[resultIndex].err
+	result := f.setResults[resultIndex]
+	if result.hang {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	return result.err
 }
 
 func (f *fakeStore) getArgs() []getArgs {

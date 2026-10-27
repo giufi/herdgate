@@ -16,6 +16,7 @@ import (
 const (
 	_defaultFetchTimeout            = 30 * time.Second
 	_defaultCoordinationCallTimeout = 1 * time.Second
+	_defaultStoreCallTimeout        = 1 * time.Second
 
 	_defaultHeartbeatInterval    = 500 * time.Millisecond
 	_defaultLeaseTTL             = 4 * _defaultHeartbeatInterval
@@ -207,7 +208,7 @@ func (hg *Herdgate) Close(ctx context.Context) error {
 }
 
 // guardedStoreGet attempts to read the stored value for the key with
-// [Store.Get], turning an error or a panic into a miss.
+// [Store.Get] under a timeout, turning an error or a panic into a miss.
 //
 // Caching is best-effort on lookups: a Store that fails degrades Do to
 // an uncached fetch instead of failing it.
@@ -221,14 +222,17 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 		}
 	}()
 
-	value, found, err := hg.store.Get(ctx, key)
+	getCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
+	defer cancel()
+
+	value, found, err := hg.store.Get(getCtx, key)
 	switch {
-	case err != nil && ctx.Err() != nil: // ctx canceled or expired
-		hg.metrics.incrementCacheMiss()
+	case err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()): // ctx canceled or expired
+		hg.metrics.incrementCacheLookupContextDone()
 		_logger.Debug(ctx, "Context done during cache lookup, treating it as a miss",
 			slog.String("key", key), slog.Any("error", err))
 		return nil, false
-	case err != nil:
+	case err != nil: // any other error, including a getCtx timeout
 		hg.metrics.incrementCacheLookupError()
 		_logger.Error(ctx, "Cache lookup failed, treating it as a miss",
 			slog.String("key", key), slog.Any("error", err))
@@ -560,7 +564,7 @@ func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout ti
 		case <-ticker.C:
 			value, found, err = hg.store.Get(pollCtx, key)
 			switch {
-			case err != nil && pollCtx.Err() != nil: // pollCtx canceled or expired
+			case err != nil && pollCtx.Err() != nil && errors.Is(err, pollCtx.Err()): // pollCtx canceled or expired
 				return nil, false, nil
 			case err != nil:
 				return nil, false, err
@@ -592,7 +596,7 @@ func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Con
 }
 
 // guardedStoreSet attempts to cache the fetched value for the key with
-// [Store.Set], turning a panic into an error.
+// [Store.Set] under a timeout, turning a panic into an error.
 //
 // Recovery happens here, not in coordinatedFill, so recordCacheWrite labels
 // the write as an error.
@@ -604,5 +608,7 @@ func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byt
 		hg.metrics.recordCacheWrite(err)
 	}()
 
-	return hg.store.Set(ctx, key, value, ttl)
+	setCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
+	defer cancel()
+	return hg.store.Set(setCtx, key, value, ttl)
 }
