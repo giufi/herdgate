@@ -18,7 +18,7 @@ func TestCoordination_NewNilClientPanic(t *testing.T) {
 	assert.PanicsWithValue(t, "rediscoord: client must not be nil", func() { New(nil) })
 }
 
-func TestCoordination_NewClientIgnoringDeadlinesPanic(t *testing.T) {
+func TestCoordination_NewClientIgnoringContextDeadlinePanic(t *testing.T) {
 	client := redis.NewClient(&redis.Options{})
 	t.Cleanup(func() { _ = client.Close() })
 
