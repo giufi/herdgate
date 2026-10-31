@@ -466,6 +466,8 @@ func TestHerdgate_DoCoordinationLeader(t *testing.T) {
 		assert.Equal(t, int64(1), fetchCalls.Load())
 		assert.Equal(t, []acquireArgs{{key: _key, ttl: _defaultLeaseTTL}}, coord.acquireArgs())
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultAcquired)), 0)
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRelease, _testResultSuccess)), 0)
+		assert.Equal(t, 2, testutil.CollectAndCount(hg.metrics.coordinationOps))
 		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
 	})
 }
@@ -524,6 +526,7 @@ func TestHerdgate_DoCoordinationAcquireError(t *testing.T) {
 			assert.Equal(t, want, got)
 			assert.Equal(t, int64(1), fetchCalls.Load())
 			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultError)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
 		})
 	}
 }
@@ -551,7 +554,9 @@ func TestHerdgate_DoCoordinationReleaseError(t *testing.T) {
 		assert.Equal(t, want, got)
 		assert.Equal(t, int64(1), fetchCalls.Load())
 		assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultAcquired)), 0)
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRelease, _testResultError)), 0)
+		assert.Equal(t, 2, testutil.CollectAndCount(hg.metrics.coordinationOps))
 	})
 }
 
@@ -579,6 +584,7 @@ func TestHerdgate_DoCoordinationFollower(t *testing.T) {
 		assert.Equal(t, int64(0), fetchCalls.Load())
 		assert.Len(t, coord.acquireArgs(), 1)
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultContended)), 0)
+		assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
 		assert.Equal(t, 0, testutil.CollectAndCount(hg.metrics.cacheWrites))
 	})
 }
@@ -606,7 +612,9 @@ func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
 		assert.Equal(t, want, got)
 		assert.Equal(t, int64(0), fetchCalls.Load())
 		assert.Len(t, coord.acquireArgs(), 2)
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultContended)), 0)
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultContended)), 0)
+		assert.Equal(t, 2, testutil.CollectAndCount(hg.metrics.coordinationOps))
 	})
 }
 
@@ -642,7 +650,10 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquired(t *testing.T) {
 				assert.Equal(t, int64(1), fetchCalls.Load())
 				assert.Len(t, coord.acquireArgs(), 2)
 				assert.Equal(t, []setArgs{{key: _key, value: want, ttl: time.Minute}}, store.setArgs())
+				assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultContended)), 0)
 				assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultAcquired)), 0)
+				assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRelease, _testResultSuccess)), 0)
+				assert.Equal(t, 3, testutil.CollectAndCount(hg.metrics.coordinationOps))
 				assert.Equal(t, []releaseArgs{{key: _key, token: _token}}, coord.releaseArgs())
 			})
 		})
@@ -669,7 +680,9 @@ func TestHerdgate_DoCoordinationFollowerRetryAcquireError(t *testing.T) {
 		assert.Equal(t, want, got)
 		assert.Equal(t, int64(1), fetchCalls.Load())
 		assert.Len(t, coord.acquireArgs(), 2)
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultContended)), 0)
 		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultError)), 0)
+		assert.Equal(t, 2, testutil.CollectAndCount(hg.metrics.coordinationOps))
 	})
 }
 
@@ -697,7 +710,8 @@ func TestHerdgate_DoCoordinationFollowerPollError(t *testing.T) {
 				assert.Equal(t, want, got)
 				assert.Equal(t, int64(1), fetchCalls.Load())
 				assert.Len(t, coord.acquireArgs(), 1)
-				assert.InDelta(t, 0, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquireRetry, _testResultContended)), 0)
+				assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationAcquire, _testResultContended)), 0)
+				assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
 			})
 		})
 	}
