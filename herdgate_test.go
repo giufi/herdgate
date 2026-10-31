@@ -754,7 +754,7 @@ func TestHerdgate_DoCoordinationFollowerTimeout(t *testing.T) {
 
 func TestHerdgate_DoCoordinationConcurrentCallsAcrossInstancesCoalesced(t *testing.T) {
 	redisServer := miniredis.RunT(t)
-	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr(), MaxRetries: -1})
+	redisClient := redis.NewClient(&redis.Options{Addr: redisServer.Addr(), MaxRetries: -1, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { _ = redisClient.Close() })
 	coord := rediscoord.New(redisClient)
 

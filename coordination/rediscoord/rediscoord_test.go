@@ -18,6 +18,13 @@ func TestCoordination_NewNilClientPanic(t *testing.T) {
 	assert.PanicsWithValue(t, "rediscoord: client must not be nil", func() { New(nil) })
 }
 
+func TestCoordination_NewClientIgnoringDeadlinesPanic(t *testing.T) {
+	client := redis.NewClient(&redis.Options{})
+	t.Cleanup(func() { _ = client.Close() })
+
+	assert.PanicsWithValue(t, "rediscoord: client must set ContextTimeoutEnabled", func() { New(client) })
+}
+
 func TestCoordination_AcquireInvalidTTL(t *testing.T) {
 	server, client := setupRedis(t)
 	coord := New(client)
@@ -371,7 +378,7 @@ func TestCoordination_ReleaseMatchingToken(t *testing.T) {
 func setupRedis(t *testing.T) (*miniredis.Miniredis, *redis.Client) {
 	t.Helper()
 	server := miniredis.RunT(t)
-	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1})
+	client := redis.NewClient(&redis.Options{Addr: server.Addr(), MaxRetries: -1, ContextTimeoutEnabled: true})
 	t.Cleanup(func() { _ = client.Close() })
 	return server, client
 }

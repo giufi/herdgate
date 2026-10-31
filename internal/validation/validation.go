@@ -1,4 +1,4 @@
-// Package validation provides validation helpers.
+// Package validation provides general validation helpers.
 package validation
 
 import "reflect"

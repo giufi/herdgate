@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/giufi/herdgate/internal/validation"
+	"github.com/giufi/herdgate/internal/validation/redisvalidation"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -42,10 +43,16 @@ type Coordination struct {
 
 // New creates a [Coordination] backed by the given client.
 //
-// It panics if client is nil.
+// It panics if the client is nil or ignores the context deadline
+// (ContextTimeoutEnabled off, or ReadTimeout/WriteTimeout disabling
+// SetReadDeadline/SetWriteDeadline calls). The deadline check covers only
+// [redis.Client], [redis.ClusterClient] and [redis.Ring].
 func New(client redis.UniversalClient) *Coordination {
 	if validation.IsNil(client) {
 		panic("rediscoord: client must not be nil")
+	}
+	if err := redisvalidation.CheckContextDeadline(client); err != nil {
+		panic("rediscoord: " + err.Error())
 	}
 	return &Coordination{client: client, rand: rand.Reader}
 }
