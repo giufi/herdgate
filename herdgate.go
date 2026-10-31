@@ -213,17 +213,18 @@ func (hg *Herdgate) Close(ctx context.Context) error {
 // Caching is best-effort on lookups: a Store that fails degrades Do to
 // an uncached fetch instead of failing it.
 func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []byte, found bool) {
+	getCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
+	defer cancel()
+
 	defer func() {
 		if r := recover(); r != nil {
 			value, found = nil, false
 			hg.metrics.incrementCacheLookupError()
-			_logger.Error(ctx, "Cache lookup failed, treating it as a miss",
-				slog.String("key", key), slog.Any("error", errFromPanic(ctx, r)))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Store.Get panicked, treating it as a miss",
+				slog.String("key", key), slog.Any("error", panicErr), stackAttr)
 		}
 	}()
-
-	getCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
-	defer cancel()
 
 	value, found, err := hg.store.Get(getCtx, key)
 	switch {
@@ -234,7 +235,7 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 		return nil, false
 	case err != nil: // any other error, including a getCtx timeout
 		hg.metrics.incrementCacheLookupError()
-		_logger.Error(ctx, "Cache lookup failed, treating it as a miss",
+		_logger.Error(ctx, "Store.Get failed, treating it as a miss",
 			slog.String("key", key), slog.Any("error", err))
 		return nil, false
 	case found:
@@ -290,7 +291,9 @@ func (hg *Herdgate) admitFlight() (done func(), admitted bool) {
 func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Duration, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("herdgate: unexpected panic: %w", errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Unexpected panic", slog.String("key", key), slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("herdgate: unexpected panic: %w", panicErr)
 		}
 	}()
 
@@ -303,7 +306,7 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 		return value, nil
 	}
 
-	value, err = hg.guardedFetch(ctx, fetch)
+	value, err = hg.guardedFetch(ctx, key, fetch)
 	if err != nil {
 		_logger.Error(ctx, "Fetch failed", slog.String("key", key), slog.Any("error", err))
 		return nil, err
@@ -313,11 +316,7 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 	}
 	_logger.Debug(ctx, "Fetch succeeded", slog.String("key", key))
 
-	if err := hg.guardedStoreSet(ctx, key, value, ttl); err != nil {
-		_logger.Error(ctx, "Cache write failed, returning fetched value", slog.String("key", key), slog.Any("error", err))
-		return value, nil
-	}
-	_logger.Debug(ctx, "Cache write", slog.String("key", key), ttlAttr(ttl))
+	hg.guardedStoreSet(ctx, key, value, ttl)
 	return value, nil
 }
 
@@ -370,11 +369,11 @@ func (hg *Herdgate) coordinate(ctx context.Context, key string) (value []byte, f
 
 	switch {
 	case acquireErr != nil:
-		_logger.Error(ctx, "Coordination.Acquire failed, fetching directly", slog.String("key", key), slog.Any("error", acquireErr))
+		_logger.Error(ctx, "Lease acquisition failed, fetching directly", slog.String("key", key), slog.Any("error", acquireErr))
 	case acquired:
 		return nil, false, hg.holdLease(ctx, key, token)
 	case pollErr != nil:
-		_logger.Error(ctx, "Follower Store.Get failed, fetching directly", slog.String("key", key), slog.Any("error", pollErr))
+		_logger.Error(ctx, "Follower store poll failed, fetching directly", slog.String("key", key), slog.Any("error", pollErr))
 	default:
 		_logger.Debug(ctx, "Follower gave up waiting, fetching directly", slog.String("key", key))
 	}
@@ -421,7 +420,9 @@ func (hg *Herdgate) guardedAcquireWith(ctx context.Context, key string, recordAc
 	defer func() {
 		if r := recover(); r != nil {
 			token, acquired = "", false
-			err = fmt.Errorf("coordination.Acquire panicked: %w", errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Coordination.Acquire panicked", slog.String("key", key), slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("coordination.Acquire panicked: %w", panicErr)
 		}
 		recordAcquire(start, acquired, err)
 	}()
@@ -469,7 +470,7 @@ func (hg *Herdgate) startHeartbeat(ctx context.Context, key, token string) (stop
 						_logger.Debug(ctx, "Lease presumed lost, no renewal confirmed within lease TTL", slog.String("key", key), slog.String("token", token))
 						return
 					}
-					_logger.Error(ctx, "Coordination.Renew failed, retrying", slog.String("key", key), slog.String("token", token), slog.Any("error", err))
+					_logger.Error(ctx, "Lease renewal failed, retrying", slog.String("key", key), slog.String("token", token), slog.Any("error", err))
 				case !renewed:
 					_logger.Debug(ctx, "Lease lost", slog.String("key", key), slog.String("token", token))
 					return
@@ -499,7 +500,10 @@ func (hg *Herdgate) guardedRenew(ctx context.Context, key, token string) (renewe
 	var contextDone bool
 	defer func() {
 		if r := recover(); r != nil {
-			renewed, err = false, fmt.Errorf("coordination.Renew panicked: %w", errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Coordination.Renew panicked",
+				slog.String("key", key), slog.String("token", token), slog.Any("error", panicErr), stackAttr)
+			renewed, err = false, fmt.Errorf("coordination.Renew panicked: %w", panicErr)
 		}
 		if contextDone {
 			hg.metrics.recordCoordinationRenewContextDone(start)
@@ -517,8 +521,9 @@ func (hg *Herdgate) guardedRenew(ctx context.Context, key, token string) (renewe
 }
 
 // guardedRelease attempts to release the lease for the specified key
-// with [Coordination.Release] under a timeout. A failure is logged and
-// recorded, without ever affecting [Herdgate.Do]'s caller.
+// with [Coordination.Release] under a timeout. A failure, including a
+// recovered panic, is logged and recorded, without ever affecting
+// [Herdgate.Do]'s caller.
 func (hg *Herdgate) guardedRelease(ctx context.Context, key, token string) {
 	start := time.Now()
 	releaseCtx, cancel := context.WithTimeout(ctx, _defaultCoordinationCallTimeout)
@@ -527,10 +532,10 @@ func (hg *Herdgate) guardedRelease(ctx context.Context, key, token string) {
 	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			panicErr := errFromPanic(ctx, r)
-			err = fmt.Errorf("coordination.Release panicked: %w", panicErr)
+			stackAttr, panicErr := errFromPanic(r)
 			_logger.Error(ctx, "Coordination.Release panicked",
-				slog.String("key", key), slog.String("token", token), slog.Any("error", panicErr))
+				slog.String("key", key), slog.String("token", token), slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("coordination.Release panicked: %w", panicErr)
 		}
 		hg.metrics.recordCoordinationRelease(start, err)
 	}()
@@ -558,7 +563,9 @@ func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout ti
 	defer func() {
 		if r := recover(); r != nil {
 			value, found = nil, false
-			err = fmt.Errorf("store.Get panicked: %w", errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Store.Get panicked", slog.String("key", key), slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("store.Get panicked: %w", panicErr)
 		}
 	}()
 
@@ -587,11 +594,13 @@ func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout ti
 //
 // Recovery happens here, not in coordinatedFill, so observeFetch labels
 // the fetch as an error.
-func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
+func (hg *Herdgate) guardedFetch(ctx context.Context, key string, fetch func(ctx context.Context) ([]byte, error)) (_ []byte, err error) {
 	start := time.Now()
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("herdgate: fetch panicked: %w", errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Fetch panicked", slog.String("key", key), slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("herdgate: fetch panicked: %w", panicErr)
 		}
 		hg.metrics.observeFetch(start, err)
 	}()
@@ -602,19 +611,25 @@ func (hg *Herdgate) guardedFetch(ctx context.Context, fetch func(ctx context.Con
 }
 
 // guardedStoreSet attempts to cache the fetched value for the key with
-// [Store.Set] under a timeout, turning a panic into an error.
-//
-// Recovery happens here, not in coordinatedFill, so recordCacheWrite labels
-// the write as an error.
-func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byte, ttl time.Duration) (err error) {
+// [Store.Set] under a timeout. A failure, including a recovered panic, is
+// logged and recorded, without failing the caller.
+func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byte, ttl time.Duration) {
+	setCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
+	defer cancel()
+
+	var err error
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("store.Set panicked: %w", errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Store.Set panicked", slog.String("key", key), slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("store.Set panicked: %w", panicErr)
 		}
 		hg.metrics.recordCacheWrite(err)
 	}()
 
-	setCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
-	defer cancel()
-	return hg.store.Set(setCtx, key, value, ttl)
+	if err = hg.store.Set(setCtx, key, value, ttl); err != nil {
+		_logger.Error(ctx, "Store.Set failed", slog.String("key", key), slog.Any("error", err))
+		return
+	}
+	_logger.Debug(ctx, "Value cached", slog.String("key", key), ttlAttr(ttl))
 }

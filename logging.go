@@ -1,7 +1,6 @@
 package herdgate
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -24,16 +23,16 @@ func ttlAttr(ttl time.Duration) slog.Attr {
 	return slog.String("ttl", ttl.String())
 }
 
-// errFromPanic converts a recovered panic value to an error. It also logs
-// the stack trace, since panic values don't carry one.
+// errFromPanic returns the stack trace as a log attribute and an error
+// built from the recovered panic value.
 //
 // It must be called inside the deferred recover, otherwise the stack is
 // not accurate.
-func errFromPanic(ctx context.Context, panicVal any) error {
-	_logger.Error(ctx, "Panic recovered", slog.String("stack", string(debug.Stack())))
-
-	if err, ok := panicVal.(error); ok {
-		return err
+func errFromPanic(panicVal any) (stackAttr slog.Attr, err error) {
+	stackAttr = slog.String("stack", string(debug.Stack()))
+	err, ok := panicVal.(error)
+	if !ok {
+		err = errors.New(fmt.Sprint(panicVal))
 	}
-	return errors.New(fmt.Sprint(panicVal))
+	return stackAttr, err
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 )
 
 // Codec is the interface for converting a value to and from bytes.
@@ -29,7 +30,9 @@ func (JSONCodec) Unmarshal(data []byte, v any) error {
 func guardedMarshal(ctx context.Context, codec Codec, v any) (_ []byte, err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("herdgate: marshal %T panicked: %w", v, errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Codec.Marshal panicked", slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("herdgate: marshal %T panicked: %w", v, panicErr)
 		}
 	}()
 
@@ -44,7 +47,9 @@ func guardedMarshal(ctx context.Context, codec Codec, v any) (_ []byte, err erro
 func guardedUnmarshal(ctx context.Context, codec Codec, data []byte, v any) (err error) {
 	defer func() {
 		if r := recover(); r != nil {
-			err = fmt.Errorf("herdgate: unmarshal %T panicked: %w", v, errFromPanic(ctx, r))
+			stackAttr, panicErr := errFromPanic(r)
+			_logger.Error(ctx, "Codec.Unmarshal panicked", slog.Any("error", panicErr), stackAttr)
+			err = fmt.Errorf("herdgate: unmarshal %T panicked: %w", v, panicErr)
 		}
 	}()
 
