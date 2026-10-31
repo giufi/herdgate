@@ -66,7 +66,7 @@ func TestCoordination_AcquireConnectionError(t *testing.T) {
 	server.Close()
 
 	token, acquired, err := coord.Acquire(t.Context(), _key, time.Minute)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "rediscoord: acquire: ")
 	assert.False(t, acquired)
 	assert.Empty(t, token)
 	assert.False(t, server.Exists(lockKey(_key)))
@@ -255,7 +255,7 @@ func TestCoordination_RenewConnectionError(t *testing.T) {
 	server.Close()
 
 	renewed, err := coord.Renew(t.Context(), _key, token, time.Minute)
-	require.Error(t, err)
+	require.ErrorContains(t, err, "rediscoord: renew: ")
 	assert.False(t, renewed)
 	assert.Equal(t, ttl, server.TTL(lockKey(_key)))
 
@@ -355,7 +355,7 @@ func TestCoordination_ReleaseConnectionError(t *testing.T) {
 
 	server.Close()
 
-	require.Error(t, coord.Release(t.Context(), _key, token))
+	require.ErrorContains(t, coord.Release(t.Context(), _key, token), "rediscoord: release: ")
 
 	stored, err := server.Get(lockKey(_key))
 	require.NoError(t, err)

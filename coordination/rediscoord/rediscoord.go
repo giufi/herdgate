@@ -76,7 +76,7 @@ func (c *Coordination) Acquire(ctx context.Context, key string, ttl time.Duratio
 
 	acquired, err = c.client.SetNX(ctx, lockKey(key), token, ttl).Result()
 	if err != nil {
-		return "", false, fmt.Errorf("rediscoord: %w", err)
+		return "", false, fmt.Errorf("rediscoord: acquire: %w", err)
 	}
 	if !acquired {
 		return "", false, nil
@@ -102,7 +102,7 @@ func (c *Coordination) Renew(ctx context.Context, key, token string, ttl time.Du
 
 	result, err := _renewScript.Run(ctx, c.client, []string{lockKey(key)}, token, ttlMs).Int()
 	if err != nil {
-		return false, fmt.Errorf("rediscoord: %w", err)
+		return false, fmt.Errorf("rediscoord: renew: %w", err)
 	}
 	return result == 1, nil
 }
@@ -114,7 +114,7 @@ func (c *Coordination) Renew(ctx context.Context, key, token string, ttl time.Du
 // On a token mismatch (the script returns 0), no error is returned.
 func (c *Coordination) Release(ctx context.Context, key, token string) error {
 	if err := _releaseScript.Run(ctx, c.client, []string{lockKey(key)}, token).Err(); err != nil {
-		return fmt.Errorf("rediscoord: %w", err)
+		return fmt.Errorf("rediscoord: release: %w", err)
 	}
 	return nil
 }
