@@ -105,6 +105,7 @@ func TestHerdgate_DoCacheHit(t *testing.T) {
 func TestHerdgate_DoStoreGetError(t *testing.T) {
 	testCases := map[string]*fakeStore{
 		_errorTestCase:                      {getResults: []getResult{{err: assert.AnError}}},
+		"context.Canceled":                  {getResults: []getResult{{err: context.Canceled}}}, // ctx still live
 		"error and unexpected cached value": {getResults: []getResult{{value: []byte("cached"), found: true, err: assert.AnError}}},
 		_panicTestCase:                      {getPanic: assert.AnError},
 	}
@@ -1211,7 +1212,8 @@ func TestHerdgate_StartHeartbeatStopDuringRenew(t *testing.T) {
 
 		assert.Zero(t, time.Since(start), "stop did not cancel the in-flight renewal")
 		assert.Equal(t, []renewArgs{{key: _key, token: _token, ttl: _defaultLeaseTTL}}, coord.renewArgs())
-		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRenew, _testResultError)), 0)
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRenew, _testResultContextDone)), 0)
+		assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
 	})
 }
 
@@ -1260,6 +1262,7 @@ func TestHerdgate_GuardedRenewMetrics(t *testing.T) {
 		_testResultRenewed: {coord: &fakeCoordination{renewResults: []renewResult{{renewed: true}}}, wantResult: _testResultRenewed},
 		_testResultLost:    {coord: &fakeCoordination{renewResults: []renewResult{{renewed: false}}}, wantResult: _testResultLost},
 		_errorTestCase:     {coord: &fakeCoordination{renewResults: []renewResult{{err: assert.AnError}}}, wantResult: _testResultError},
+		"context.Canceled": {coord: &fakeCoordination{renewResults: []renewResult{{err: context.Canceled}}}, wantResult: _testResultError}, // ctx still live
 		_panicTestCase:     {coord: &fakeCoordination{renewPanic: _panicValue}, wantResult: _testResultError},
 	}
 
@@ -1268,6 +1271,43 @@ func TestHerdgate_GuardedRenewMetrics(t *testing.T) {
 			hg := newTestHerdgate(nil, WithCoordination(tc.coord))
 
 			_, _ = hg.guardedRenew(t.Context(), _key, _token)
+			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRenew, tc.wantResult)), 0)
+			assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
+		})
+	}
+}
+
+func TestHerdgate_GuardedRenewTimeout(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		coord := &fakeCoordination{renewResults: []renewResult{{hang: true}}}
+		hg := newTestHerdgate(nil, WithCoordination(coord))
+
+		start := time.Now()
+		_, err := hg.guardedRenew(t.Context(), _key, _token)
+		require.ErrorIs(t, err, context.DeadlineExceeded)
+		assert.Equal(t, _defaultHeartbeatCallTimeout, time.Since(start))
+		assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRenew, _testResultError)), 0)
+		assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
+	})
+}
+
+func TestHerdgate_GuardedRenewContextCanceled(t *testing.T) {
+	testCases := map[string]struct {
+		coord      *fakeCoordination
+		wantResult string
+	}{
+		"ctx error":       {coord: &fakeCoordination{renewResults: []renewResult{{hang: true}}}, wantResult: _testResultContextDone},
+		"any other error": {coord: &fakeCoordination{renewResults: []renewResult{{err: assert.AnError}}}, wantResult: _testResultError},
+		_panicTestCase:    {coord: &fakeCoordination{renewPanic: _panicValue}, wantResult: _testResultError},
+	}
+
+	for name, tc := range testCases {
+		t.Run(name, func(t *testing.T) {
+			hg := newTestHerdgate(nil, WithCoordination(tc.coord))
+			ctx, cancel := context.WithCancel(t.Context())
+			cancel()
+
+			_, _ = hg.guardedRenew(ctx, _key, _token)
 			assert.InDelta(t, 1, testutil.ToFloat64(hg.metrics.coordinationOps.WithLabelValues(_testOperationRenew, tc.wantResult)), 0)
 			assert.Equal(t, 1, testutil.CollectAndCount(hg.metrics.coordinationOps))
 		})

@@ -29,8 +29,9 @@ const (
 	_resultLookupError       = "error"
 	_resultLookupContextDone = "context_done"
 
-	_resultSuccess = "success"
-	_resultError   = "error"
+	_resultSuccess     = "success"
+	_resultError       = "error"
+	_resultContextDone = "context_done"
 
 	_resultAcquired  = "acquired"
 	_resultContended = "contended"
@@ -134,6 +135,10 @@ func (m *metrics) recordCoordinationRenew(start time.Time, renewed bool, err err
 		result = _resultLost
 	}
 	m.recordCoordinationOperation(_coordinationOperationRenew, result, start)
+}
+
+func (m *metrics) recordCoordinationRenewContextDone(start time.Time) {
+	m.recordCoordinationOperation(_coordinationOperationRenew, _resultContextDone, start)
 }
 
 func (m *metrics) recordCoordinationRelease(start time.Time, err error) {

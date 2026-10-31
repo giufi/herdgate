@@ -496,15 +496,21 @@ func (hg *Herdgate) guardedRenew(ctx context.Context, key, token string) (renewe
 	renewCtx, cancel := context.WithTimeout(ctx, _defaultHeartbeatCallTimeout)
 	defer cancel()
 
+	var contextDone bool
 	defer func() {
 		if r := recover(); r != nil {
 			renewed, err = false, fmt.Errorf("coordination.Renew panicked: %w", errFromPanic(ctx, r))
 		}
-		hg.metrics.recordCoordinationRenew(start, renewed, err)
+		if contextDone {
+			hg.metrics.recordCoordinationRenewContextDone(start)
+		} else {
+			hg.metrics.recordCoordinationRenew(start, renewed, err)
+		}
 	}()
 
 	renewed, err = hg.coordination.Renew(renewCtx, key, token, _defaultLeaseTTL)
 	if err != nil {
+		contextDone = ctx.Err() != nil && errors.Is(err, ctx.Err()) // ctx canceled or expired
 		return false, err
 	}
 	return renewed, nil

@@ -17,8 +17,9 @@ const (
 	_testResultLookupError       = "error"
 	_testResultLookupContextDone = "context_done"
 
-	_testResultSuccess = "success"
-	_testResultError   = "error"
+	_testResultSuccess     = "success"
+	_testResultError       = "error"
+	_testResultContextDone = "context_done"
 
 	_testResultAcquired  = "acquired"
 	_testResultContended = "contended"
@@ -154,6 +155,16 @@ func TestMetrics_RecordCoordinationRenew(t *testing.T) {
 			assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationDuration))
 		})
 	}
+}
+
+func TestMetrics_RecordCoordinationRenewContextDone(t *testing.T) {
+	m := newMetrics()
+
+	m.recordCoordinationRenewContextDone(time.Now())
+	assert.InDelta(t, 1, testutil.ToFloat64(m.coordinationOps.WithLabelValues(_testOperationRenew, _testResultContextDone)), 0)
+	assertHistogramObservedOnce(t, m.coordinationDuration, _testOperationRenew, _testResultContextDone)
+	assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationOps))
+	assert.Equal(t, 1, testutil.CollectAndCount(m.coordinationDuration))
 }
 
 func TestMetrics_RecordCoordinationRelease(t *testing.T) {
