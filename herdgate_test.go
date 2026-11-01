@@ -767,6 +767,7 @@ func TestHerdgate_DoCoordinationFollowerPollError(t *testing.T) {
 				assert.Equal(t, want, got)
 				assert.Equal(t, int64(1), fetchCalls.Load())
 				assert.Len(t, coord.acquireArgs(), 1)
+				assert.Len(t, store.getArgs(), 2)
 				assertMetricCounts(t, hg.metrics, func(want *metrics) {
 					want.recordCacheLookupError(_anyStart)
 					want.recordCoordinationAcquire(_anyStart, false, nil)
