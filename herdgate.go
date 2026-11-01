@@ -213,13 +213,14 @@ func (hg *Herdgate) Close(ctx context.Context) error {
 // Caching is best-effort on lookups: a Store that fails degrades Do to
 // an uncached fetch instead of failing it.
 func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []byte, found bool) {
+	start := time.Now()
 	getCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
 	defer cancel()
 
 	defer func() {
 		if r := recover(); r != nil {
 			value, found = nil, false
-			hg.metrics.incrementCacheLookupError()
+			hg.metrics.recordCacheLookupError(start)
 			stackAttr, panicErr := errFromPanic(r)
 			_logger.Error(ctx, "Store.Get panicked, treating it as a miss",
 				slog.String("key", key), slog.Any("error", panicErr), stackAttr)
@@ -229,20 +230,20 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 	value, found, err := hg.store.Get(getCtx, key)
 	switch {
 	case err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()): // ctx canceled or expired
-		hg.metrics.incrementCacheLookupContextDone()
+		hg.metrics.recordCacheLookupContextDone(start)
 		_logger.Debug(ctx, "Context done during cache lookup, treating it as a miss",
 			slog.String("key", key), slog.Any("error", err))
 		return nil, false
 	case err != nil: // any other error, including a getCtx timeout
-		hg.metrics.incrementCacheLookupError()
+		hg.metrics.recordCacheLookupError(start)
 		_logger.Error(ctx, "Store.Get failed, treating it as a miss",
 			slog.String("key", key), slog.Any("error", err))
 		return nil, false
 	case found:
-		hg.metrics.incrementCacheHit()
+		hg.metrics.recordCacheHit(start)
 		_logger.Debug(ctx, "Cache hit", slog.String("key", key))
 	default:
-		hg.metrics.incrementCacheMiss()
+		hg.metrics.recordCacheMiss(start)
 		_logger.Debug(ctx, "Cache miss", slog.String("key", key))
 	}
 	return value, found
@@ -614,6 +615,7 @@ func (hg *Herdgate) guardedFetch(ctx context.Context, key string, fetch func(ctx
 // [Store.Set] under a timeout. A failure, including a recovered panic, is
 // logged and recorded, without failing the caller.
 func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byte, ttl time.Duration) {
+	start := time.Now()
 	setCtx, cancel := context.WithTimeout(ctx, _defaultStoreCallTimeout)
 	defer cancel()
 
@@ -624,7 +626,7 @@ func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byt
 			_logger.Error(ctx, "Store.Set panicked", slog.String("key", key), slog.Any("error", panicErr), stackAttr)
 			err = fmt.Errorf("store.Set panicked: %w", panicErr)
 		}
-		hg.metrics.recordCacheWrite(err)
+		hg.metrics.recordCacheWrite(start, err)
 	}()
 
 	if err = hg.store.Set(setCtx, key, value, ttl); err != nil {

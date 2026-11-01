@@ -10,8 +10,8 @@ import (
 //
 // It implements [prometheus.Collector].
 type metrics struct {
-	cacheLookups         *prometheus.CounterVec
-	cacheWrites          *prometheus.CounterVec
+	storeOps             *prometheus.CounterVec
+	storeDuration        *prometheus.HistogramVec
 	coordinationOps      *prometheus.CounterVec
 	coordinationDuration *prometheus.HistogramVec
 	fetchDuration        *prometheus.HistogramVec
@@ -39,6 +39,9 @@ const (
 	_resultRenewed = "renewed"
 	_resultLost    = "lost"
 
+	_storeOperationGet = "get"
+	_storeOperationSet = "set"
+
 	_coordinationOperationAcquire      = "acquire"
 	_coordinationOperationAcquireRetry = "acquire_retry"
 	_coordinationOperationRelease      = "release"
@@ -47,14 +50,14 @@ const (
 
 func newMetrics() *metrics {
 	return &metrics{
-		cacheLookups: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "herdgate_cache_lookups_total",
-			Help: "Total cache lookup attempts, by result.",
-		}, []string{_labelResult}),
-		cacheWrites: prometheus.NewCounterVec(prometheus.CounterOpts{
-			Name: "herdgate_cache_writes_total",
-			Help: "Total cache write attempts, by result.",
-		}, []string{_labelResult}),
+		storeOps: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "herdgate_store_operations_total",
+			Help: "Total Store operations, by operation and result.",
+		}, []string{_labelOperation, _labelResult}),
+		storeDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
+			Name: "herdgate_store_duration_seconds",
+			Help: "Duration of Store operations, in seconds, by operation and result.",
+		}, []string{_labelOperation, _labelResult}),
 		coordinationOps: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "herdgate_coordination_operations_total",
 			Help: "Total Coordination operations, by operation and result.",
@@ -74,28 +77,33 @@ func newMetrics() *metrics {
 	}
 }
 
-func (m *metrics) incrementCacheHit() {
-	m.cacheLookups.WithLabelValues(_resultLookupHit).Inc()
+func (m *metrics) recordCacheHit(start time.Time) {
+	m.recordStoreOperation(_storeOperationGet, _resultLookupHit, start)
 }
 
-func (m *metrics) incrementCacheMiss() {
-	m.cacheLookups.WithLabelValues(_resultLookupMiss).Inc()
+func (m *metrics) recordCacheMiss(start time.Time) {
+	m.recordStoreOperation(_storeOperationGet, _resultLookupMiss, start)
 }
 
-func (m *metrics) incrementCacheLookupError() {
-	m.cacheLookups.WithLabelValues(_resultLookupError).Inc()
+func (m *metrics) recordCacheLookupError(start time.Time) {
+	m.recordStoreOperation(_storeOperationGet, _resultLookupError, start)
 }
 
-func (m *metrics) incrementCacheLookupContextDone() {
-	m.cacheLookups.WithLabelValues(_resultLookupContextDone).Inc()
+func (m *metrics) recordCacheLookupContextDone(start time.Time) {
+	m.recordStoreOperation(_storeOperationGet, _resultLookupContextDone, start)
 }
 
-func (m *metrics) recordCacheWrite(err error) {
+func (m *metrics) recordCacheWrite(start time.Time, err error) {
 	result := _resultSuccess
 	if err != nil {
 		result = _resultError
 	}
-	m.cacheWrites.WithLabelValues(result).Inc()
+	m.recordStoreOperation(_storeOperationSet, result, start)
+}
+
+func (m *metrics) recordStoreOperation(operation, result string, start time.Time) {
+	m.storeOps.WithLabelValues(operation, result).Inc()
+	m.storeDuration.WithLabelValues(operation, result).Observe(time.Since(start).Seconds())
 }
 
 func (m *metrics) recordCoordinationAcquire(start time.Time, acquired bool, err error) {
@@ -168,8 +176,8 @@ func (m *metrics) incrementCoalescedWaiter() {
 
 func (m *metrics) collectors() []prometheus.Collector {
 	return []prometheus.Collector{
-		m.cacheLookups,
-		m.cacheWrites,
+		m.storeOps,
+		m.storeDuration,
 		m.coordinationOps,
 		m.coordinationDuration,
 		m.fetchDuration,
