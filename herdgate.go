@@ -89,6 +89,11 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 // internal timeout. Canceling ctx ends the wait, not the fetch: it runs
 // to completion and caches its result.
 //
+// Do never retries a failed fetch.
+// Inside fetch, retry only transient errors and with few attempts, since
+// other callers wait for its result.
+// Retries must stop when the context passed to fetch is done.
+//
 // If a [Coordination] is configured via the functional option
 // [WithCoordination], Do also performs distributed request coalescing: at
 // most one caller performs the fetch at a time, and other callers wait
