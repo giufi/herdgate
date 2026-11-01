@@ -9,7 +9,7 @@ import (
 //
 // A Store must be safe for concurrent use by multiple goroutines.
 type Store interface {
-	// Get returns the value stored for the given key.
+	// Get returns the value stored for the given key, if present.
 	//
 	// Modifying the returned value must not affect the Store or any value returned by another call.
 	//

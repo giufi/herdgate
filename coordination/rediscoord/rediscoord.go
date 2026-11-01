@@ -36,6 +36,8 @@ return 0
 `)
 
 // Coordination is a Redis-backed implementation of [herdgate.Coordination].
+//
+// [herdgate.Coordination]: https://pkg.go.dev/github.com/giufi/herdgate#Coordination
 type Coordination struct {
 	client redis.UniversalClient
 	rand   io.Reader
@@ -98,7 +100,7 @@ func (c *Coordination) Renew(ctx context.Context, key, token string, ttl time.Du
 		return false, err
 	}
 
-	ttlMs := max(ttl.Milliseconds(), 1) // a non-positive PEXPIRE deletes the key instead of failing
+	ttlMs := max(ttl.Milliseconds(), 1) // a sub-millisecond ttl truncates to 0, and PEXPIRE 0 deletes the key
 
 	result, err := _renewScript.Run(ctx, c.client, []string{lockKey(key)}, token, ttlMs).Int()
 	if err != nil {

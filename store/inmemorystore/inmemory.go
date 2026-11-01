@@ -37,7 +37,7 @@ func New() *Store {
 	return &Store{}
 }
 
-// Get returns the value stored for the given key.
+// Get returns the value stored for the given key, if present.
 //
 // The found result reports whether the key was found. False means the key
 // is missing or its TTL has elapsed.
