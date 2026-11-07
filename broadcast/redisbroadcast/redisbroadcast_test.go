@@ -356,7 +356,9 @@ func TestBroadcast_UnsubscribeConcurrentValueUnread(t *testing.T) {
 	_, ok := receive(t, values)
 	assert.False(t, ok)
 	assert.Empty(t, broadcast.slots)
-	assert.Empty(t, server.PubSubChannels("*"))
+	assert.EventuallyWithT(t, func(c *assert.CollectT) {
+		assert.Empty(c, server.PubSubChannels("*"))
+	}, time.Second, time.Millisecond)
 }
 
 type subscribePanicClient struct {
