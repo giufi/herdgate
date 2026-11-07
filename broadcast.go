@@ -18,16 +18,22 @@ type Broadcast interface {
 	Publish(ctx context.Context, key string, value []byte) error
 
 	// Subscribe starts a subscription to values published for the given
-	// key. It returns only once the subscription is active, not merely
-	// requested.
+	// key. Once it returns, values published afterwards are delivered on the
+	// values channel until the unsubscribe function is called or the channel
+	// is closed. Delivery is not guaranteed: a value can be lost without the
+	// channel closing.
+	//
+	// Once Subscribe returns, canceling ctx or reaching its deadline must
+	// not affect the subscription.
 	//
 	// The values channel delivers each published value as a copy the
-	// caller owns, and closes when the subscription ends. It must end
-	// after any failure that may have lost a value.
+	// caller owns. It must be closed once the unsubscribe function returns,
+	// and after any failure the implementation detects.
 	//
-	// The unsubscribe function ends this subscription without affecting
-	// other subscriptions for the same key. It is idempotent and safe for
-	// concurrent use.
+	// The unsubscribe function stops this subscription without affecting
+	// other subscriptions for the same key. It must return even if a value
+	// is still waiting to be read on the values channel. It must be
+	// idempotent and safe for concurrent use.
 	//
 	// A non-nil error means the subscribe attempt failed, in which case
 	// values and unsubscribe are nil.
