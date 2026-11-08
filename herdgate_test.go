@@ -36,8 +36,9 @@ const (
 	_errorTestCase   = "error"
 	_panicTestCase   = "panic"
 
-	_pollMissTestCase = "poll miss"
-	_pollHangTestCase = "poll hang"
+	_pollMissTestCase      = "poll miss"
+	_pollHangTestCase      = "poll hang"
+	_pollHangErrorTestCase = "poll hang then error"
 )
 
 func TestMain(m *testing.M) {
@@ -156,18 +157,23 @@ func TestHerdgate_DoStoreGetTimeout(t *testing.T) {
 
 func TestHerdgate_GuardedStoreGetContextCanceled(t *testing.T) {
 	testCases := map[string]struct {
-		store  *fakeStore
-		replay func(want *metrics)
+		store       *fakeStore
+		withTimeout bool
+		replay      func(want *metrics)
 	}{
-		"ctx error":       {store: &fakeStore{getResults: []getResult{{hang: true}}}, replay: func(want *metrics) { want.recordCacheLookupContextDone(_anyStart) }},
-		"any other error": {store: &fakeStore{getResults: []getResult{{err: assert.AnError}}}, replay: func(want *metrics) { want.recordCacheLookupError(_anyStart) }},
-		_panicTestCase:    {store: &fakeStore{getPanic: assert.AnError}, replay: func(want *metrics) { want.recordCacheLookupError(_anyStart) }},
+		"ctx error":                {store: &fakeStore{getResults: []getResult{{hang: true}}}, replay: func(want *metrics) { want.recordCacheLookupContextDone(_anyStart) }},
+		"any other error":          {store: &fakeStore{getResults: []getResult{{err: assert.AnError}}}, replay: func(want *metrics) { want.recordCacheLookupError(_anyStart) }},
+		"error after ctx deadline": {store: &fakeStore{getResults: []getResult{{err: assert.AnError}}}, withTimeout: true, replay: func(want *metrics) { want.recordCacheLookupContextDone(_anyStart) }},
+		_panicTestCase:             {store: &fakeStore{getPanic: assert.AnError}, replay: func(want *metrics) { want.recordCacheLookupError(_anyStart) }},
 	}
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			hg := newTestHerdgate(tc.store)
 			ctx, cancel := context.WithCancel(t.Context())
+			if tc.withTimeout {
+				ctx, cancel = context.WithTimeout(t.Context(), 0)
+			}
 			cancel()
 
 			value, found := hg.guardedStoreGet(ctx, _key)
@@ -669,8 +675,9 @@ func TestHerdgate_DoCoordinationFollowerRetryValueFound(t *testing.T) {
 
 func TestHerdgate_DoCoordinationFollowerRetryAcquired(t *testing.T) {
 	testCases := map[string]*fakeStore{
-		_pollMissTestCase: {},
-		_pollHangTestCase: {getResults: []getResult{{}, {hang: true}}},
+		_pollMissTestCase:      {},
+		_pollHangTestCase:      {getResults: []getResult{{}, {hang: true}}},
+		_pollHangErrorTestCase: {getResults: []getResult{{}, {hang: true, err: assert.AnError}}},
 	}
 
 	for name, store := range testCases {
@@ -781,8 +788,9 @@ func TestHerdgate_DoCoordinationFollowerPollError(t *testing.T) {
 
 func TestHerdgate_DoCoordinationFollowerTimeout(t *testing.T) {
 	testCases := map[string]*fakeStore{
-		_pollMissTestCase: {},
-		_pollHangTestCase: {getResults: []getResult{{}, {hang: true}}},
+		_pollMissTestCase:      {},
+		_pollHangTestCase:      {getResults: []getResult{{}, {hang: true}}},
+		_pollHangErrorTestCase: {getResults: []getResult{{}, {hang: true, err: assert.AnError}}},
 	}
 
 	for name, store := range testCases {
@@ -1415,17 +1423,19 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 		parentTimeout time.Duration
 		timeout       time.Duration
 		pollHang      bool
+		pollErr       error
 		wantElapsed   time.Duration
 	}{
 		"no parent deadline":                   {parentTimeout: 0, timeout: 150 * time.Millisecond, wantElapsed: 150 * time.Millisecond},
 		"parent deadline shorter than timeout": {parentTimeout: 150 * time.Millisecond, timeout: time.Minute, wantElapsed: 150 * time.Millisecond},
 		_pollHangTestCase:                      {parentTimeout: 0, timeout: 150 * time.Millisecond, pollHang: true, wantElapsed: 150 * time.Millisecond},
+		_pollHangErrorTestCase:                 {parentTimeout: 0, timeout: 150 * time.Millisecond, pollHang: true, pollErr: assert.AnError, wantElapsed: 150 * time.Millisecond},
 	}
 
 	for name, tc := range testCases {
 		t.Run(name, func(t *testing.T) {
 			synctest.Test(t, func(t *testing.T) {
-				store := &fakeStore{getResults: []getResult{{hang: tc.pollHang}}}
+				store := &fakeStore{getResults: []getResult{{hang: tc.pollHang, err: tc.pollErr}}}
 				hg := newTestHerdgate(store)
 
 				ctx := t.Context()
@@ -1448,9 +1458,8 @@ func TestHerdgate_AwaitLeaderValueTimeout(t *testing.T) {
 
 func TestHerdgate_AwaitLeaderValueStoreError(t *testing.T) {
 	testCases := map[string]*fakeStore{
-		_errorTestCase:    {getResults: []getResult{{err: assert.AnError}}},
-		"hang then error": {getResults: []getResult{{hang: true, err: assert.AnError}}},
-		_panicTestCase:    {getPanic: assert.AnError},
+		_errorTestCase: {getResults: []getResult{{err: assert.AnError}}},
+		_panicTestCase: {getPanic: assert.AnError},
 	}
 
 	for name, store := range testCases {

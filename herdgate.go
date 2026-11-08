@@ -234,7 +234,7 @@ func (hg *Herdgate) guardedStoreGet(ctx context.Context, key string) (value []by
 
 	value, found, err := hg.store.Get(getCtx, key)
 	switch {
-	case err != nil && ctx.Err() != nil && errors.Is(err, ctx.Err()): // ctx canceled or expired
+	case isContextDone(ctx, err):
 		hg.metrics.recordCacheLookupContextDone(start)
 		_logger.Debug(ctx, "Context done during cache lookup, treating it as a miss",
 			slog.String("key", key), slog.Any("error", err))
@@ -520,7 +520,7 @@ func (hg *Herdgate) guardedRenew(ctx context.Context, key, token string) (renewe
 
 	renewed, err = hg.coordination.Renew(renewCtx, key, token, _defaultLeaseTTL)
 	if err != nil {
-		contextDone = ctx.Err() != nil && errors.Is(err, ctx.Err()) // ctx canceled or expired
+		contextDone = isContextDone(ctx, err)
 		return false, err
 	}
 	return renewed, nil
@@ -583,7 +583,7 @@ func (hg *Herdgate) awaitLeaderValue(ctx context.Context, key string, timeout ti
 		case <-ticker.C:
 			value, found, err = hg.store.Get(pollCtx, key)
 			switch {
-			case err != nil && pollCtx.Err() != nil && errors.Is(err, pollCtx.Err()): // pollCtx canceled or expired
+			case isContextDone(pollCtx, err):
 				return nil, false, nil
 			case err != nil:
 				return nil, false, err
@@ -639,4 +639,17 @@ func (hg *Herdgate) guardedStoreSet(ctx context.Context, key string, value []byt
 		return
 	}
 	_logger.Debug(ctx, "Value cached", slog.String("key", key), ttlAttr(ttl))
+}
+
+// isContextDone reports whether a non-nil err is due to ctx being canceled
+// or past its deadline. Past the deadline err is not examined.
+func isContextDone(ctx context.Context, err error) bool {
+	if err == nil {
+		return false
+	}
+	if ctx.Err() != nil && errors.Is(err, ctx.Err()) {
+		return true
+	}
+	deadline, ok := ctx.Deadline()
+	return ok && !time.Now().Before(deadline)
 }
