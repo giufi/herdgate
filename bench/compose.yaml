@@ -1,0 +1,35 @@
+name: herdgate-bench
+
+services:
+  redis:
+    image: redis:8.8.4-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    networks: [bench]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 1s
+      retries: 30
+
+  bench:
+    image: golang:1.27.3
+    networks: [bench]
+    working_dir: /src/bench
+    environment:
+      GOFLAGS: -buildvcs=false
+    volumes:
+      - ..:/src:ro
+      - ./results:/results
+      - gomodcache:/go/pkg/mod
+      - gobuildcache:/root/.cache/go-build
+    init: true
+    entrypoint: ["sh", "-c", "go build -o /tmp/bench . && exec /tmp/bench -redis redis:6379 \"$$@\"", "bench"]
+    depends_on:
+      redis:
+        condition: service_healthy
+
+networks:
+  bench:
+
+volumes:
+  gomodcache:
+  gobuildcache:

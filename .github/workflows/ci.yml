@@ -65,7 +65,23 @@ jobs:
         uses: golangci/golangci-lint-action@v9
         with:
           version: v2.15.0
-  
+
+      - name: Verify bench go.mod/go.sum are tidy
+        run: |
+          go -C bench mod tidy -v
+          STATUS=$(git status --porcelain bench/go.mod bench/go.sum)
+          if [ -n "$STATUS" ]; then
+            echo "::error::bench/go.mod/go.sum are not tidy. Run 'go -C bench mod tidy' locally and commit the changes."
+            echo "$STATUS"
+            exit 1
+          fi
+
+      - name: Lint bench
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: v2.15.0
+          working-directory: bench
+
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -103,7 +119,10 @@ jobs:
 
       - name: Build
         run: go build -trimpath -v ./...
-  
+
+      - name: Build bench
+        run: go -C bench build -trimpath -v ./...
+
   test:
     runs-on: ubuntu-latest
     timeout-minutes: 5
@@ -141,3 +160,6 @@ jobs:
 
       - name: Test with race detector
         run: go test -race -count=1 -v ./...
+
+      - name: Test bench with race detector
+        run: go -C bench test -race -count=1 -v ./...
