@@ -55,20 +55,23 @@ func newMetrics() *metrics {
 			Help: "Total Store operations, by operation and result.",
 		}, []string{_labelOperation, _labelResult}),
 		storeDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name: "herdgate_store_duration_seconds",
-			Help: "Duration of Store operations, in seconds, by operation and result.",
+			Name:    "herdgate_store_duration_seconds",
+			Help:    "Duration of Store operations, in seconds, by operation and result.",
+			Buckets: []float64{.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2},
 		}, []string{_labelOperation, _labelResult}),
 		coordinationOps: prometheus.NewCounterVec(prometheus.CounterOpts{
 			Name: "herdgate_coordination_operations_total",
 			Help: "Total Coordination operations, by operation and result.",
 		}, []string{_labelOperation, _labelResult}),
 		coordinationDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name: "herdgate_coordination_duration_seconds",
-			Help: "Duration of Coordination operations, in seconds, by operation and result.",
+			Name:    "herdgate_coordination_duration_seconds",
+			Help:    "Duration of Coordination operations, in seconds, by operation and result.",
+			Buckets: []float64{.0001, .00025, .0005, .001, .0025, .005, .01, .025, .05, .1, .25, .5, 1, 2},
 		}, []string{_labelOperation, _labelResult}),
 		fetchDuration: prometheus.NewHistogramVec(prometheus.HistogramOpts{
-			Name: "herdgate_fetch_duration_seconds",
-			Help: "Duration of fetch calls, in seconds. With DoDecode, each duration also includes marshaling the fetched value.",
+			Name:    "herdgate_fetch_duration_seconds",
+			Help:    "Duration of fetch calls, in seconds. With DoDecode, each duration also includes marshaling the fetched value.",
+			Buckets: []float64{.005, .01, .025, .05, .1, .25, .5, 1, 2.5, 5, 10, 15, 20, 25, 30, 45, 60},
 		}, []string{_labelResult}),
 		coalescedWaiters: prometheus.NewCounter(prometheus.CounterOpts{
 			Name: "herdgate_coalesced_waiters_total",
