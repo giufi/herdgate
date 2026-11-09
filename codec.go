@@ -8,8 +8,13 @@ import (
 )
 
 // Codec is the interface for converting a value to and from bytes.
+//
+// A Codec must be safe for concurrent use by multiple goroutines.
 type Codec interface {
+	// Marshal returns the encoding of v.
 	Marshal(v any) ([]byte, error)
+
+	// Unmarshal decodes data into the value pointed to by v.
 	Unmarshal(data []byte, v any) error
 }
 
@@ -18,10 +23,13 @@ type JSONCodec struct{}
 
 var _ Codec = JSONCodec{}
 
+// Marshal returns the JSON encoding of v, via [json.Marshal].
 func (JSONCodec) Marshal(v any) ([]byte, error) {
 	return json.Marshal(v)
 }
 
+// Unmarshal decodes the JSON-encoded data into the value pointed to by v,
+// via [json.Unmarshal].
 func (JSONCodec) Unmarshal(data []byte, v any) error {
 	return json.Unmarshal(data, v)
 }

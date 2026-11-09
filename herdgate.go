@@ -95,20 +95,24 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 // Retries must stop when the context passed to fetch is done.
 //
 // If a [Coordination] is configured via the functional option
-// [WithCoordination], Do also performs distributed request coalescing: at
-// most one caller performs the fetch at a time, and other callers wait
-// for its result instead of fetching independently. If the leader
-// fetches successfully but fails to cache the result, a contended
-// caller waits up to an internal timeout before fetching on its own:
-// its total wait can then exceed the fetch timeout alone.
+// [WithCoordination], Do also performs distributed request coalescing:
+// the caller that wins the lease for the key fetches, and callers that
+// lose it wait for the value to appear in the [Store] instead of fetching
+// independently. If the lease holder's fetch fails, or its value is not
+// cached, a waiting caller fetches on its own once it wins the lease on a
+// later retry, or once an internal timeout elapses. Its total wait can
+// then exceed the fetch timeout alone.
 //
-// Coordination is best-effort: it is bypassed if acquiring the lease
-// fails, and a failed release does not affect the caller. A lease lost
-// mid-fetch does not stop the fetch, letting another caller fetch
-// concurrently.
+// Coordination is best-effort: it is bypassed if acquiring the lease or
+// polling the [Store] fails, and a failed release does not affect the
+// caller. A lease lost mid-fetch does not stop the fetch, letting another
+// caller fetch concurrently. If the lease holder caches the value and
+// releases the lease just after another caller last read the [Store],
+// that caller can win the lease and fetch the value again.
 //
-// Do returns [ErrClosed] on a cache miss, once [Herdgate.Close] has
-// been called.
+// After [Herdgate.Close] has been called, Do returns [ErrClosed] on a
+// cache miss. If a fetch for the same key started before Close and is
+// still running, Do waits for it and returns its result instead.
 //
 // A panic from fetch is recovered and returned as an error.
 func (hg *Herdgate) Do(ctx context.Context, key string, opts DoOptions, fetch func(ctx context.Context) ([]byte, error)) ([]byte, error) {
@@ -326,8 +330,9 @@ func (hg *Herdgate) coordinatedFill(ctx context.Context, key string, ttl time.Du
 	return value, nil
 }
 
-// coordinate attempts to acquire the [Coordination] lease for key, if
-// configured, so that at most one caller fetches it at a time:
+// coordinate attempts to acquire the [Coordination] lease for the
+// specified key, if configured, so that callers contending for the same
+// lease wait instead of fetching independently:
 //   - No Coordination configured: bypassed.
 //   - Won: the returned release keeps the lease alive by renewing it
 //     periodically until called. If renewal stops mid-fetch and the
