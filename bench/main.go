@@ -325,7 +325,8 @@ func runTrial(
 	if total < 1 {
 		return result, errors.New("no upstream requests, at least one expected")
 	}
-	// coordination mode happy path: at most one request per instance
+	// Coordination should never make more upstream requests than singleflight's
+	// happy path, i.e., one per instance
 	if options.mode == _modeCoordination && total > options.instances {
 		return result, fmt.Errorf("%d upstream requests, at most %d expected in a healthy trial",
 			total, options.instances)
