@@ -34,7 +34,7 @@ jobs:
         uses: github/codeql-action/analyze@v4
         with:
           category: "/language:go"
-          upload: false
+          upload: always
           upload-database: false
           output: sarif-results
 
