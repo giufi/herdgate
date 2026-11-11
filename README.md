@@ -18,9 +18,9 @@ Herdgate targets distributed thundering herds where each operation can be identi
 
 A benchmark simulating a cache stampede scenario was performed locally via Docker Desktop, with different modes in order to evaluate Herdgate's impact:
 
-- ungated mode (no Herdgate usage)
-- singleflight mode (Coordination not configured)
-- coordination mode (Coordination configured)
+- ungated mode: no Herdgate usage, with every caller performing a cache lookup and, on a miss, retrieving the value from the upstream and caching it
+- singleflight mode: one Herdgate per service instance, each coalescing the fetches of its concurrent callers (see [Local coalescing first](#local-coalescing-first))
+- coordination mode: singleflight plus Redis-backed Coordination, where one Herdgate fetches under a lease while the others wait for the cached value (see [Lease-based coordination with TTL and heartbeats](#lease-based-coordination-with-ttl-and-heartbeats))
 
 Each benchmark run recreated 300 cache stampede occurrences (i.e., trials). Each cache stampede involved 20 simulated service instances, running in a single process, with 100 concurrent callers per service instance performing the same operation: cache lookup for the same key, value retrieval from a simulated constrained upstream on a cache miss and value caching.
 
@@ -29,8 +29,8 @@ The simulated upstream handled only 10 requests at the same time (median latency
 Key benchmark results:
 
 - ungated mode: 2000 upstream requests per trial (one per caller), with 99.5% failed callers due to the upstream being constrained
-- singleflight mode: nearly 100x reduction in the number of upstream requests per trial, and failed callers reduced to 49%
-- coordination mode: nearly 20x further reduction in the number of upstream requests per trial, and 0 failed callers
+- singleflight mode: a median of 20 upstream requests per trial (one per service instance), with 49% failed callers
+- coordination mode: a median of 1 upstream request per trial (at most 2), with 0 failed callers
 
 Full benchmark results can be reviewed in [this folder](bench/results/2026-11-09-mode-comparison). Each run has a summary with the exact command used to reproduce it, and a CSV with one row per trial.
 
@@ -182,7 +182,7 @@ Using specific (e.g., Redis-backed only) implementations for storage and coordin
 
 - Custom implementations can be provided when existing ones are not suitable.
 - New or updated implementations do not affect Herdgate, as long as they honor the interface contract.
-- Maintenance of multiple implementations.
+- Multiple implementations add maintenance effort.
 
 ### Coalesced fetches outlive caller cancellation
 
