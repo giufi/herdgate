@@ -163,3 +163,26 @@ jobs:
 
       - name: Test bench with race detector
         run: go -C bench test -race -count=1 -v ./...
+
+  vulncheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Setup Go
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+          cache: false
+
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      - name: Check vulnerabilities
+        run: govulncheck ./...
+
+      - name: Check bench vulnerabilities
+        run: govulncheck -C bench ./...
