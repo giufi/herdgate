@@ -115,30 +115,34 @@ sequenceDiagram
     participant A as Service instance A (leader)
     participant B as Service instance B (follower)
     participant S as Store (Redis)
-    participant L as Lease (Redis)
+    participant C as Coordination (Redis)
     participant U as Upstream
 
     A->>S: Get(key)
     S-->>A: miss
     B->>S: Get(key)
     S-->>B: miss
-    A->>L: acquire(key)
-    L-->>A: acquired
-    B->>L: acquire(key)
-    L-->>B: not acquired
+    A->>C: Acquire(key)
+    C-->>A: acquired
+    B->>C: Acquire(key)
+    C-->>B: not acquired
     par A fetches
         A->>U: fetch
         U-->>A: value
-    and B polls the Store
-        loop every 100ms
-            B->>S: Get(key)
-            S-->>B: miss
+    and B waits for the value
+        loop every 1s
+            loop every 100ms
+                B->>S: Get(key)
+                S-->>B: miss
+            end
+            B->>C: Acquire(key)
+            C-->>B: not acquired
         end
     end
     A->>S: Set(key, value, TTL)
-    A->>L: release(key)
+    A->>C: Release(key)
     B->>S: Get(key)
-    Note over B: first poll after the write
+    Note over B: first poll after Set
     S-->>B: value
 ```
 
@@ -148,7 +152,7 @@ sequenceDiagram
 
 **Decision**
 
-Each Herdgate performs local request coalescing with a dedicated `singleflight.Group` before attempting distributed coordination.
+Each Herdgate performs local coalescing with a dedicated `singleflight.Group` before attempting distributed coordination.
 
 **Rejected alternative**
 

@@ -31,9 +31,9 @@ const (
 // be fetched after [Herdgate.Close] has been called.
 var ErrClosed = errors.New("herdgate: closed")
 
-// A Herdgate is a read-through cache backed by a [Store]. It performs
-// local request coalescing for concurrent fetches of the same key, with
-// optional support for distributed request coalescing via a [Coordination].
+// A Herdgate coalesces concurrent fetches for the same key and caches their
+// results in a [Store]. Coalescing is local, with optional support for
+// distributed coalescing via a [Coordination].
 //
 // Call [Herdgate.Close] when it is no longer needed.
 type Herdgate struct {
@@ -95,7 +95,7 @@ func newHerdgate(store Store, m *metrics) *Herdgate {
 // Retries must stop when the context passed to fetch is done.
 //
 // If a [Coordination] is configured via the functional option
-// [WithCoordination], Do also performs distributed request coalescing:
+// [WithCoordination], Do also performs distributed coalescing:
 // the caller that wins the lease for the key fetches, and callers that
 // lose it wait for the value to appear in the [Store] instead of fetching
 // independently. If the lease holder's fetch fails, or its value is not
