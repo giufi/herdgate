@@ -87,3 +87,29 @@ func TestSimulator_InvokeOutcomes(t *testing.T) {
 		})
 	}
 }
+
+func TestSimulator_InvokeCtxDoneDuringSlotWait(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		sim := upstream.New(upstream.Config{
+			LatencyMedian: _latency,
+			LatencySigma:  0,
+			LatencyMax:    _latency,
+			MaxConcurrent: _maxConcurrent,
+			SlotWait:      _slotWait,
+		})
+
+		var wg sync.WaitGroup
+		for range _maxConcurrent {
+			wg.Go(func() { _ = sim.Invoke(t.Context(), _key) })
+		}
+		synctest.Wait()
+
+		ctx, cancel := context.WithTimeout(t.Context(), _slotWait/2)
+		defer cancel()
+		err := sim.Invoke(ctx, _key)
+		wg.Wait()
+
+		assert.Equal(t, upstream.RequestCounts{Accepted: _maxConcurrent}, sim.RequestCounts(_key))
+		assert.ErrorIs(t, err, context.DeadlineExceeded)
+	})
+}

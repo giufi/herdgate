@@ -54,7 +54,10 @@ func New(config Config) *Simulator {
 }
 
 // Invoke handles a request for the given key.
-// A request counts as accepted once it gets a slot, even if ctx ends first.
+// A request counts as accepted once it gets a slot, even if ctx is done before
+// the simulated latency elapses. It counts as rejected if no slot frees up
+// within [Config.SlotWait]. It is not counted if ctx is done while it waits
+// for a slot.
 func (s *Simulator) Invoke(ctx context.Context, key string) error {
 	select {
 	case s.slots <- struct{}{}:
@@ -62,6 +65,8 @@ func (s *Simulator) Invoke(ctx context.Context, key string) error {
 	case <-time.After(s.config.SlotWait):
 		s.recordRejected(key)
 		return ErrConcurrencyLimit
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 
 	s.recordAccepted(key)
